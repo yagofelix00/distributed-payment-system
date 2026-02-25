@@ -181,3 +181,60 @@ def test_webhook_value_mismatch_returns_400_and_keeps_pending(client, app):
     with app.app_context():
         refreshed = Charge.query.get(charge.id)
         assert refreshed.status == ChargeStatus.PENDING.value
+
+
+def test_webhook_duplicate_event_id_is_ignored_without_changing_paid_at(client, app):
+    with app.app_context():
+        charge = _create_charge(
+            value=88.0,
+            status=ChargeStatus.PENDING,
+            external_id="ext-duplicate-event",
+        )
+        ttl_key = f"charge:ttl:{charge.external_id}"
+        app.fake_redis.setex(ttl_key, 1800, "PENDING")
+        assert app.fake_redis.exists(ttl_key) == 1
+
+    payload = {
+        "event_id": "evt_same_event_twice",
+        "external_id": "ext-duplicate-event",
+        "value": 88.0,
+        "status": "PAID",
+    }
+    payload_bytes = json.dumps(payload, separators=(",", ":"), ensure_ascii=False).encode()
+    signature = _sign_payload("test-webhook-secret", payload_bytes)
+
+    first_response = client.post(
+        "/webhooks/pix",
+        data=payload_bytes,
+        headers={
+            "Content-Type": "application/json",
+            "X-Timestamp": str(int(time.time())),
+            "X-Signature": signature,
+            "X-Event-Id": "evt_same_event_twice",
+            "Idempotency-Key": "idem-first",
+        },
+    )
+    assert first_response.status_code == 200
+
+    with app.app_context():
+        first_paid_at = Charge.query.get(charge.id).paid_at
+        assert first_paid_at is not None
+
+    second_response = client.post(
+        "/webhooks/pix",
+        data=payload_bytes,
+        headers={
+            "Content-Type": "application/json",
+            "X-Timestamp": str(int(time.time())),
+            "X-Signature": signature,
+            "X-Event-Id": "evt_same_event_twice",
+            "Idempotency-Key": "idem-second",
+        },
+    )
+    assert second_response.status_code == 200
+    assert second_response.get_json()["message"] == "Duplicate event ignored"
+
+    with app.app_context():
+        refreshed = Charge.query.get(charge.id)
+        assert refreshed.status == ChargeStatus.PAID.value
+        assert refreshed.paid_at == first_paid_at
