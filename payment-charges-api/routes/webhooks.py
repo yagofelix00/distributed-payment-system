@@ -60,20 +60,28 @@ def pix_webhook():
         if not external_id or not value or not status:
             return jsonify({"error": "Invalid payload"}), 400
 
+        if status != "PAID":
+            return jsonify({"message": "Ignored"}), 200
+        
         # 📤 2. Ignora notificações que não representam pagamento concluído
+        # ✅ Dedupe only for PAID events (avoid blocking a later PAID for same event_id)
         event_key = f"webhook:event:{event_id}"
         try:
             if redis_client.exists(event_key):
+                logger.info(
+                    "Duplicate webhook event ignored",
+                    extra={"event_id": event_id, "external_id": external_id}
+                )
                 return jsonify({"message": "Duplicate event ignored"}), 200
+
+            # Mark event_id as processed for 24h (replay protection)
             redis_client.setex(event_key, 86400, "1")
+
         except Exception:
             logger.exception(f"Redis check failed for event dedupe key={event_key}")
             return jsonify({"error": "Service unavailable"}), 503
 
-        if status != "PAID":
-            return jsonify({"message": "Ignored"}), 200
-
-        # 🔍 3. Busca cobrança
+        # 🔍 3. Busca charges
         charge = Charge.query.filter_by(external_id=external_id).first()
 
         if not charge:
