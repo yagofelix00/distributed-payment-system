@@ -73,10 +73,6 @@ def pix_webhook():
                     extra={"event_id": event_id, "external_id": external_id}
                 )
                 return jsonify({"message": "Duplicate event ignored"}), 200
-
-            # Mark event_id as processed for 24h (replay protection)
-            redis_client.setex(event_key, 86400, "1")
-
         except Exception:
             logger.exception(f"Redis check failed for event dedupe key={event_key}")
             return jsonify({"error": "Service unavailable"}), 503
@@ -143,6 +139,15 @@ def pix_webhook():
         except Exception:
             logger.exception(f"Failed to commit payment for charge | id={charge.id}")
             return jsonify({"error": "Internal server error"}), 500
+        
+        # Mark event as processed only after successful state transition
+        try:
+            redis_client.setex(event_key, 86400, "1")
+        except Exception:
+            logger.exception(
+                "Failed to persist webhook dedupe key after successful processing",
+                extra={"event_id": event_id, "external_id": external_id}
+            )
 
         # Log informativo para auditoria / monitoramento.
         logger.info(
