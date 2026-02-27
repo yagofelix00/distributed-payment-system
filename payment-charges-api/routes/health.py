@@ -17,7 +17,9 @@ def ready():
 
     try:
         # Use SQLAlchemy 2.x textual SQL execution for connectivity check.
-        db.session.execute(text("SELECT 1"))
+        result = db.session.execute(text("SELECT 1")).scalar_one()
+        if result != 1:
+            raise RuntimeError("DB healthcheck returned unexpected result")
     except Exception:
         database_status = "failed"
 
