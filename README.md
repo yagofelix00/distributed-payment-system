@@ -241,8 +241,6 @@ X-Request-Id: demo-001
 
 ## 📌 Próximos Passos
 
-* [ ] Testes automatizados
-* [ ] DLQ (Dead Letter Queue) no Fake Bank
 * [ ] Métricas (Prometheus)
 * [ ] Migração para PostgreSQL
 * [ ] Deploy em ambiente cloud
