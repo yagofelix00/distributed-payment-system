@@ -30,7 +30,7 @@ O projeto tem foco **educacional e de portfólio**, demonstrando **como sistemas
 
 ### Fluxo completo
 
-1. Cliente cria uma cobrança (`POST /charges`)
+1. Cliente cria uma cobrança (`POST /payment/charges`)
 2. Cobrança é registrada no Fake Bank
 3. Fake Bank processa o pagamento PIX
 4. Fake Bank envia **webhook assinado**
@@ -125,7 +125,7 @@ Serviços disponíveis:
 ### 1️⃣ Criar cobrança
 
 ```bash
-curl -X POST http://localhost:5000/charges \
+curl -X POST http://localhost:5000/payment/charges \
   -H "Content-Type: application/json" \
   -H "X-Request-Id: demo-001" \
   -d '{"value":100.0}'
@@ -174,7 +174,7 @@ O Fake Bank dispara o webhook automaticamente.
 ### 4️⃣ Consultar status final
 
 ```bash
-curl http://localhost:5000/charges/1 \
+curl http://localhost:5000/payment/charges/1 \
   -H "X-Request-Id: demo-001"
 ```
 
@@ -259,5 +259,6 @@ GitHub: https://github.com/yagofelix00
 LinkedIn: https://www.linkedin.com/in/yago-felix-737011279/
 
 ---
+
 
 
