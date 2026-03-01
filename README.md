@@ -72,6 +72,33 @@ Isso protege contra:
 
 > Modelo inspirado em provedores como **Stripe, Mercado Pago e OpenPix**.
 
+## ?? Health & Readiness
+
+A API exp�e dois endpoints voltados para ambientes de produ��o, adequados para ambientes conteinerizados (Docker, Kubernetes, etc.):
+### `/health`
+Verifica apenas se o servi�o est� ativo (liveness probe).
+
+Retorna:
+```json
+{ "status": "ok" }
+```
+
+### `/ready`
+Executa valida��es de depend�ncias cr�ticas:
+
+- Conectividade com o banco de dados (SQLAlchemy `SELECT 1`)
+- Conectividade com o Redis (`PING`)
+
+Exemplo de resposta:
+
+```json
+{
+  "status": "ready",
+  "database": "ok",
+  "redis": "ok"
+}
+```
+
 ---
 
 ## 🛠️ Tecnologias
