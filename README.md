@@ -99,6 +99,19 @@ Exemplo de resposta:
 }
 ```
 
+## ??? Rate Limiting
+
+A API utiliza **Flask-Limiter** com armazenamento em Redis para controle de taxa de requisições.
+
+Características:
+
+- Armazenamento distribuído via Redis (não em memória)
+- Proteção contra abuso em endpoints sensíveis
+- Limite aplicado na criação de cobranças (`POST /payment/charges`)
+- Resposta automática HTTP 429 quando o limite é excedido
+
+Essa abordagem garante controle consistente mesmo com múltiplas instâncias da aplicação.
+
 ---
 
 ## ğŸ› ï¸ Tecnologias
