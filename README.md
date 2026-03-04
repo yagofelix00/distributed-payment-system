@@ -101,16 +101,28 @@ Exemplo de resposta:
 
 ## ??? Rate Limiting
 
-A API utiliza **Flask-Limiter** com armazenamento em Redis para controle de taxa de requisições.
+A API utiliza **Flask-Limiter** com armazenamento em Redis para controle de taxa de requisiï¿½ï¿½es.
 
-Características:
+Caracterï¿½sticas:
 
-- Armazenamento distribuído via Redis (não em memória)
-- Proteção contra abuso em endpoints sensíveis
-- Limite aplicado na criação de cobranças (`POST /payment/charges`)
-- Resposta automática HTTP 429 quando o limite é excedido
+- Armazenamento distribuï¿½do via Redis (nï¿½o em memï¿½ria)
+- Proteï¿½ï¿½o contra abuso em endpoints sensï¿½veis
+- Limite aplicado no endpoint de criaÃ§Ã£o de cobranÃ§as (`POST /payment/charges`)
+- Resposta automï¿½tica HTTP 429 quando o limite ï¿½ excedido
 
-Essa abordagem garante controle consistente mesmo com múltiplas instâncias da aplicação.
+Essa abordagem garante controle consistente mesmo com mï¿½ltiplas instï¿½ncias da aplicaï¿½ï¿½o.
+
+## ðŸ”„ Continuous Integration
+
+O projeto possui **pipeline de integraï¿½ï¿½o contï¿½nua (CI)** configurado com **GitHub Actions**.
+
+A cada push ou pull request:
+
+- As dependï¿½ncias dos dois serviï¿½os sï¿½o instaladas
+- O ambiente de testes ï¿½ preparado
+- A suï¿½te de testes automatizados ï¿½ executada com **pytest**
+
+Isso garante que mudanï¿½as no cï¿½digo nï¿½o quebrem comportamentos crï¿½ticos do sistema.
 
 ---
 
