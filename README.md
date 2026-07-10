@@ -1,6 +1,6 @@
 # 💳 Payment Platform — PIX Webhooks
 
-Plataforma de pagamentos desenvolvida para **simular um fluxo real de cobranças e confirmações via PIX**, utilizando **webhooks assinados**, **Redis como fonte de verdade**, **idempotência**, **rate limit**, **observabilidade cross-service** e um **Fake Bank Service** para integração completa.
+Plataforma de pagamentos desenvolvida para **simular um fluxo real de cobranças e confirmações via PIX**, utilizando **webhooks assinados**, **SQLite para persistência local e Redis como fonte de verdade para expiração**, **idempotência**, **rate limit**, **observabilidade cross-service** e um **Fake Bank Service** para integração completa.
 
 O projeto tem foco **educacional e de portfólio**, demonstrando **como sistemas de pagamento funcionam em produção**, indo além de CRUDs simples.
 
@@ -13,6 +13,11 @@ O projeto tem foco **educacional e de portfólio**, demonstrando **como sistemas
 * Modelo: **Confirmação assíncrona via webhook**
 * Cenário real: e-commerce, SaaS, marketplaces, PSPs
 * Integração: **Payment API ↔ Fake Bank Service**
+
+Responsabilidades:
+
+* `payment-charges-api`: cria e consulta cobranças, recebe webhooks PIX assinados, valida HMAC/timestamp, aplica idempotência, controla expiração via Redis TTL e persiste estado localmente em SQLite.
+* `fake-bank-service`: registra cobranças simuladas em memória, processa o pagamento PIX fake, assina webhooks, faz retry com backoff exponencial e envia falhas definitivas para DLQ em arquivo.
 
 ---
 
@@ -31,8 +36,8 @@ O projeto tem foco **educacional e de portfólio**, demonstrando **como sistemas
 ### Fluxo completo
 
 1. Cliente cria uma cobrança (`POST /payment/charges`)
-2. Cobrança é registrada no Fake Bank
-3. Fake Bank processa o pagamento PIX
+2. Cobrança é registrada no Fake Bank (`POST /bank/pix/charges`)
+3. Fake Bank processa o pagamento PIX (`POST /bank/pix/pay`)
 4. Fake Bank envia **webhook assinado**
 5. API valida assinatura + timestamp + idempotência
 6. Cobrança é marcada como **PAID**
@@ -44,16 +49,17 @@ O projeto tem foco **educacional e de portfólio**, demonstrando **como sistemas
 * Webhooks assinados (**HMAC SHA-256**)
 * Proteção contra replay attacks (**timestamp + tolerance window**)
 * Idempotência de eventos via Redis
-* Redis como fonte de verdade para expiração (TTL)
+* SQLite para persistência local e Redis como fonte de verdade para expiração (TTL)
 * Rate limit em endpoints sensíveis
 * Observabilidade cross-service (`X-Request-Id`)
-* Logs estruturados e auditáveis
+* Logs da Payment API com `request_id`; Fake Bank mantém logs simples com `print`
 * Retry + exponential backoff no Fake Bank
+* DLQ em arquivo para falhas permanentes de webhook
 * Separação clara por camadas e responsabilidades
 
 ## 🔁 Event Deduplication
 
-Para evitar processamento duplicado de eventos de webhook, o sistema implementa deduplica��o server-side baseada em `event_id`.
+Para evitar processamento duplicado de eventos de webhook, o sistema implementa deduplicação server-side baseada em `event_id`.
 
 Funcionamento:
 
@@ -68,7 +74,7 @@ Funcionamento:
 Isso protege contra:
 - Retries do provedor
 - Reenvio manual de webhooks
-- Ataques de replay fora da janela de idempotencia
+- Ataques de replay fora da janela de idempotência
 
 > Modelo inspirado em provedores como **Stripe, Mercado Pago e OpenPix**.
 
@@ -99,36 +105,36 @@ Exemplo de resposta:
 }
 ```
 
-## ??? Rate Limiting
+## 🚦 Rate Limiting
 
-A API utiliza **Flask-Limiter** com armazenamento em Redis para controle de taxa de requisi��es.
+A API utiliza **Flask-Limiter** com armazenamento em Redis para controle de taxa de requisições.
 
-Caracter�sticas:
+Características:
 
-- Armazenamento distribu�do via Redis (n�o em mem�ria)
-- Prote��o contra abuso em endpoints sens�veis
+- Armazenamento distribuído via Redis (não em memória)
+- Proteção contra abuso em endpoints sensíveis
 - Limite aplicado no endpoint de criação de cobranças (`POST /payment/charges`)
-- Resposta autom�tica HTTP 429 quando o limite � excedido
+- Resposta automática HTTP 429 quando o limite é excedido
 
-Essa abordagem garante controle consistente mesmo com m�ltiplas inst�ncias da aplica��o.
+Essa abordagem garante controle consistente mesmo com múltiplas instâncias da aplicação.
 
 ## 🔄 Continuous Integration
 
-O projeto possui **pipeline de integra��o cont�nua (CI)** configurado com **GitHub Actions**.
+O projeto possui **pipeline de integração contínua (CI)** configurado com **GitHub Actions**.
 
 A cada push ou pull request:
 
-- As depend�ncias dos dois servi�os s�o instaladas
-- O ambiente de testes � preparado
-- A su�te de testes automatizados � executada com **pytest**
+- As dependências dos dois serviços são instaladas
+- O ambiente de testes é preparado
+- A suíte de testes automatizados de `payment-charges-api/tests` é executada com **pytest**
 
-Isso garante que mudan�as no c�digo n�o quebrem comportamentos cr�ticos do sistema.
+Isso garante que mudanças no código não quebrem comportamentos críticos do sistema.
 
 ---
 
 ## 🛠️ Tecnologias
 
-* **Python 3.12**
+* **Python 3.11**
 * **Flask**
 * **Flask SQLAlchemy**
 * **SQLite** (ambiente local)
@@ -164,7 +170,6 @@ payment-platform/
 │   ├── security/
 │   └── requirements.txt
 │
-├── openapi.yaml
 ├── docker-compose.yml
 └── README.md
 ```
@@ -187,7 +192,16 @@ docker compose up --build
 Serviços disponíveis:
 
 * Payment API → `http://localhost:5000`
+  * `GET /health`
+  * `GET /ready`
+  * `POST /payment/charges`
+  * `GET /payment/charges/<charge_id>`
+  * `POST /webhooks/pix`
 * Fake Bank → `http://localhost:6000`
+  * `POST /bank/pix/charges`
+  * `POST /bank/pix/pay`
+  * `GET /bank/dlq`
+  * `POST /bank/dlq/replay`
 
 ---
 
@@ -253,8 +267,7 @@ curl http://localhost:5000/payment/charges/1 \
 {
   "id": 1,
   "value": 100.0,
-  "status": "PAID",
-  "expires_at": "2026-01-24T12:34:56"
+  "status": "PAID"
 }
 ```
 
@@ -288,7 +301,7 @@ X-Request-Id: demo-001
 
 * Payment Charges API: `payment-charges-api/openapi.yaml`
 * Fake Bank Service: `fake-bank-service/openapi.yaml`
-* Define endpoints, payloads, headers e erros
+* Define endpoints, payloads, headers e erros dos contratos documentados
 * Pode ser usado para:
 
   * Swagger UI
@@ -299,6 +312,11 @@ X-Request-Id: demo-001
 
 ## 🧪 Testes
 
+```bash
+pytest payment-charges-api/tests -q
+```
+
+* Testes automatizados com pytest
 * Testes manuais via Postman
 * Cenários cobertos:
 
