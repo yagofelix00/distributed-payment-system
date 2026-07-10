@@ -17,25 +17,9 @@ from services.charge_state_machine import (
 )
 
 
-class FakeRedis:
-    def __init__(self):
-        self.store = {}
-
-    def get(self, key):
-        return self.store.get(key)
-
-    def setex(self, key, _ttl, value):
-        self.store[key] = value
-
-    def exists(self, key):
-        return 1 if key in self.store else 0
-
-    def delete(self, key):
-        self.store.pop(key, None)
-
 
 @pytest.fixture
-def app(monkeypatch):
+def app(monkeypatch, fake_redis):
     app = Flask(__name__)
     app.config["TESTING"] = True
     app.config["SQLALCHEMY_DATABASE_URI"] = "sqlite:///:memory:"
@@ -46,7 +30,6 @@ def app(monkeypatch):
     app.register_blueprint(charges_bp)
     app.register_blueprint(webhooks_bp)
 
-    fake_redis = FakeRedis()
     monkeypatch.setattr("routes.charges.redis_client", fake_redis)
     monkeypatch.setattr("routes.webhooks.redis_client", fake_redis)
     monkeypatch.setattr("security.idempotency.redis_client", fake_redis)
@@ -118,6 +101,7 @@ def test_webhook_paid_ignored_for_expired(client, app):
             status=ChargeStatus.EXPIRED,
             external_id="ext-webhook-expired",
         )
+        charge_id = charge.id
 
     payload = {
         "event_id": "evt_test_001",
@@ -144,5 +128,5 @@ def test_webhook_paid_ignored_for_expired(client, app):
     assert response.get_json()["message"] == "Charge already processed"
 
     with app.app_context():
-        refreshed = Charge.query.get(charge.id)
+        refreshed = db.session.get(Charge, charge_id)
         assert refreshed.status == ChargeStatus.EXPIRED
