@@ -28,7 +28,8 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r payment-charges-api/requirements.txt
           pip install -r fake-bank-service/requirements.txt
+          pip install -r requirements-dev.txt
 
       - name: Run tests
         run: |
-          pytest payment-charges-api/tests -q
+          python -m pytest payment-charges-api/tests -q
