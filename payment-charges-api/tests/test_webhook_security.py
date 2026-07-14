@@ -26,6 +26,35 @@ def _create_charge(value=100.0, status=ChargeStatus.PENDING, external_id="ext-se
     return charge
 
 
+def _post_signed_webhook(client, payload, idempotency_key):
+    if isinstance(payload, bytes):
+        payload_bytes = payload
+        event_id = None
+    else:
+        payload_bytes = json.dumps(
+            payload,
+            separators=(",", ":"),
+            ensure_ascii=False,
+        ).encode()
+        event_id = payload.get("event_id") if isinstance(payload, dict) else None
+
+    headers = {
+        "Content-Type": "application/json",
+        "X-Timestamp": str(int(time.time())),
+        "X-Signature": _sign_payload("test-webhook-secret", payload_bytes),
+        "Idempotency-Key": idempotency_key,
+    }
+
+    if event_id:
+        headers["X-Event-Id"] = event_id
+
+    return client.post(
+        "/webhooks/pix",
+        data=payload_bytes,
+        headers=headers,
+    )
+
+
 @pytest.fixture
 def app(monkeypatch, fake_redis):
     app = Flask(__name__)
@@ -54,6 +83,151 @@ def app(monkeypatch, fake_redis):
 @pytest.fixture
 def client(app):
     return app.test_client()
+
+
+def test_webhook_non_json_body_returns_400(client):
+    response = _post_signed_webhook(
+        client,
+        b"not-json",
+        "idem-invalid-payload-non-json",
+    )
+
+    assert response.status_code == 400
+    assert response.get_json() == {"error": "Invalid JSON payload"}
+
+
+def test_webhook_json_list_payload_returns_400(client):
+    response = _post_signed_webhook(
+        client,
+        ["not", "an", "object"],
+        "idem-invalid-payload-list",
+    )
+
+    assert response.status_code == 400
+    assert response.get_json() == {"error": "Invalid JSON payload"}
+
+
+def test_webhook_missing_event_id_returns_400(client):
+    response = _post_signed_webhook(
+        client,
+        {
+            "external_id": "ext-missing-event-id",
+            "value": 100.0,
+            "status": "PAID",
+        },
+        "idem-invalid-payload-missing-event-id",
+    )
+
+    assert response.status_code == 400
+    assert response.get_json() == {"error": "event_id is required"}
+
+
+def test_webhook_missing_external_id_returns_400(client):
+    response = _post_signed_webhook(
+        client,
+        {
+            "event_id": "evt_missing_external_id",
+            "value": 100.0,
+            "status": "PAID",
+        },
+        "idem-invalid-payload-missing-external-id",
+    )
+
+    assert response.status_code == 400
+    assert response.get_json() == {"error": "Invalid payload"}
+
+
+def test_webhook_missing_value_returns_400(client):
+    response = _post_signed_webhook(
+        client,
+        {
+            "event_id": "evt_missing_value",
+            "external_id": "ext-missing-value",
+            "status": "PAID",
+        },
+        "idem-invalid-payload-missing-value",
+    )
+
+    assert response.status_code == 400
+    assert response.get_json() == {"error": "Invalid payload"}
+
+
+def test_webhook_missing_status_returns_400(client):
+    response = _post_signed_webhook(
+        client,
+        {
+            "event_id": "evt_missing_status",
+            "external_id": "ext-missing-status",
+            "value": 100.0,
+        },
+        "idem-invalid-payload-missing-status",
+    )
+
+    assert response.status_code == 400
+    assert response.get_json() == {"error": "Invalid payload"}
+
+
+def test_webhook_non_paid_status_returns_ignored(client):
+    response = _post_signed_webhook(
+        client,
+        {
+            "event_id": "evt_non_paid_status",
+            "external_id": "ext-non-paid-status",
+            "value": 100.0,
+            "status": "PENDING",
+        },
+        "idem-invalid-payload-non-paid-status",
+    )
+
+    assert response.status_code == 200
+    assert response.get_json() == {"message": "Ignored"}
+
+
+def test_webhook_paid_unknown_external_id_returns_404(client):
+    response = _post_signed_webhook(
+        client,
+        {
+            "event_id": "evt_unknown_external_id",
+            "external_id": "ext-unknown-external-id",
+            "value": 100.0,
+            "status": "PAID",
+        },
+        "idem-invalid-payload-unknown-external-id",
+    )
+
+    assert response.status_code == 404
+    assert response.get_json() == {"error": "Charge not found"}
+
+
+def test_webhook_non_numeric_value_returns_400_and_keeps_pending(client, app):
+    with app.app_context():
+        charge = _create_charge(
+            value=100.0,
+            status=ChargeStatus.PENDING,
+            external_id="ext-non-numeric-value",
+        )
+        charge_id = charge.id
+        ttl_key = f"charge:ttl:{charge.external_id}"
+        app.fake_redis.setex(ttl_key, 1800, "PENDING")
+        assert app.fake_redis.exists(ttl_key) == 1
+
+    response = _post_signed_webhook(
+        client,
+        {
+            "event_id": "evt_non_numeric_value",
+            "external_id": "ext-non-numeric-value",
+            "value": "not-a-number",
+            "status": "PAID",
+        },
+        "idem-invalid-payload-non-numeric-value",
+    )
+
+    assert response.status_code == 400
+    assert response.get_json() == {"error": "Invalid value type"}
+
+    with app.app_context():
+        refreshed = db.session.get(Charge, charge_id)
+        assert refreshed.status == ChargeStatus.PENDING.value
 
 
 def test_webhook_invalid_signature_returns_401_and_keeps_pending(client, app):
