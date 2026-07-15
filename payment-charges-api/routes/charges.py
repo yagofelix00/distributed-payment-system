@@ -1,13 +1,12 @@
 from flask import Blueprint, request, jsonify
-from repository.database import db
-from db_models.charges import Charge, ChargeStatus
-from datetime import datetime
-import uuid
+from db_models.charges import Charge
 from infrastructure.redis_client import redis_client
 import json
 from extensions import limiter
 
 from audit.logger import logger
+from exceptions.charge_exceptions import InvalidChargeValue
+from services.charge_service import create_charge as create_charge_service
 from services.charge_state_machine import (
     ChargeState,
     InvalidChargeTransition,
@@ -28,33 +27,10 @@ def create_charge():
     if not data or "value" not in data:
         return jsonify({"error": "Value is required"}), 400
 
-    if data["value"] <= 0:
+    try:
+        charge = create_charge_service(data["value"])
+    except InvalidChargeValue:
         return jsonify({"error": "Invalid value"}), 400
-
-    # Charges start as PENDING. Payment confirmation must happen asynchronously via webhook.
-    charge = Charge(
-        value=data["value"],
-        status=ChargeStatus.PENDING,
-        external_id=str(uuid.uuid4()),  # Public identifier shared with the bank / external systems
-        created_at=datetime.utcnow(),
-    )
-
-    db.session.add(charge)
-    db.session.commit()
-
-    # Redis TTL acts as the "source of truth" for charge expiration:
-    # - If the TTL key expires, a PENDING charge becomes EXPIRED on next read (lazy expiration).
-    # - This avoids periodic cron jobs and keeps expiration logic consistent across services.
-    redis_client.setex(
-        f"charge:ttl:{charge.external_id}",
-        1800,  # 30 minutes
-        "PENDING",
-    )
-
-    # Structured log: keeps operational traceability (request_id injected by LoggerAdapter)
-    logger.info(
-        f"Charge created | charge_id={charge.id} | external_id={charge.external_id}"
-    )
 
     return jsonify({
         "id": charge.id,

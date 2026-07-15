@@ -31,6 +31,7 @@ def app(monkeypatch, fake_redis):
     app.register_blueprint(webhooks_bp)
 
     monkeypatch.setattr("routes.charges.redis_client", fake_redis)
+    monkeypatch.setattr("services.charge_service.redis_client", fake_redis)
     monkeypatch.setattr("routes.webhooks.redis_client", fake_redis)
     monkeypatch.setattr("security.idempotency.redis_client", fake_redis)
 

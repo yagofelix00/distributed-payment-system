@@ -34,6 +34,7 @@ def app(monkeypatch, fake_redis):
     app.register_blueprint(webhooks_bp)
 
     monkeypatch.setattr("routes.charges.redis_client", fake_redis)
+    monkeypatch.setattr("services.charge_service.redis_client", fake_redis)
     monkeypatch.setattr("routes.webhooks.redis_client", fake_redis)
     monkeypatch.setattr("security.idempotency.redis_client", fake_redis)
 
@@ -119,6 +120,20 @@ def bank_client(payment_client):
         ), 200
 
     return bank_app.test_client()
+
+
+def test_create_charge_without_value_returns_400(payment_client):
+    response = payment_client.post(CHARGES_BASE, json={})
+
+    assert response.status_code == 400
+    assert response.get_json() == {"error": "Value is required"}
+
+
+def test_create_charge_with_zero_value_returns_400(payment_client):
+    response = payment_client.post(CHARGES_BASE, json={"value": 0})
+
+    assert response.status_code == 400
+    assert response.get_json() == {"error": "Invalid value"}
 
 
 def _create_charge_and_register_bank(payment_client, bank_client, value=100.0):
