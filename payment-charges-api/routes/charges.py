@@ -71,8 +71,11 @@ def get_charge(charge_id):
 
     cached = redis_client.get(cache_key)
     if cached:
-        # Cached payload is JSON encoded; return it directly to avoid unnecessary DB hits.
-        return jsonify(json.loads(cached))
+        cached_response = json.loads(cached)
+        # Finalized charges are safe to serve from cache. PENDING charges must still
+        # validate the Redis TTL because the TTL key is the expiration authority.
+        if cached_response.get("status") != ChargeState.PENDING.value:
+            return jsonify(cached_response)
 
     charge = Charge.query.get(charge_id)
     if not charge:

@@ -174,6 +174,31 @@ def test_pix_e2e_webhook_after_ttl_expired_results_in_expired(payment_client, ba
     assert status_response.get_json()["status"] == ChargeStatus.EXPIRED.value
 
 
+def test_get_charge_expires_pending_charge_when_read_cache_is_stale(payment_client, bank_client, app):
+    charge_data = _create_charge_and_register_bank(payment_client, bank_client, value=42.0)
+    ttl_key = f"charge:ttl:{charge_data['external_id']}"
+    cache_key = f"charge:{charge_data['id']}"
+
+    assert app.fake_redis.exists(ttl_key) == 1
+
+    first_response = payment_client.get(f"{CHARGES_BASE}/{charge_data['id']}")
+    assert first_response.status_code == 200
+    assert first_response.get_json()["status"] == ChargeStatus.PENDING.value
+    assert app.fake_redis.exists(cache_key) == 1
+
+    app.fake_redis.delete(ttl_key)
+    assert app.fake_redis.exists(ttl_key) == 0
+    assert app.fake_redis.exists(cache_key) == 1
+
+    second_response = payment_client.get(f"{CHARGES_BASE}/{charge_data['id']}")
+    assert second_response.status_code == 200
+    assert second_response.get_json()["status"] == ChargeStatus.EXPIRED.value
+
+    with app.app_context():
+        refreshed = db.session.get(Charge, charge_data["id"])
+        assert refreshed.status == ChargeStatus.EXPIRED.value
+
+
 def test_pix_e2e_duplicate_webhook_event_is_ignored_and_final_status_paid(payment_client, bank_client, app):
     charge_data = _create_charge_and_register_bank(payment_client, bank_client, value=77.0)
     duplicated_event_id = "evt_duplicate_001"
