@@ -21,6 +21,33 @@ def to_decimal(value):
     except (InvalidOperation, TypeError):
         return None
 
+
+def validate_pix_webhook_payload(data):
+    if not isinstance(data, dict):
+        return None, ({"error": "Invalid JSON payload"}, 400)
+
+    external_id = data.get("external_id")
+    value = data.get("value")
+    status = data.get("status")
+    event_id = data.get("event_id")
+
+    if not event_id:
+        return None, ({"error": "event_id is required"}, 400)
+
+    if not external_id or not value or not status:
+        return None, ({"error": "Invalid payload"}, 400)
+
+    if status != "PAID":
+        return None, ({"message": "Ignored"}, 200)
+
+    return {
+        "event_id": event_id,
+        "external_id": external_id,
+        "value": value,
+        "status": status,
+    }, None
+
+
 @webhooks_bp.route("/webhooks/pix", methods=["POST"])
 @require_webhook_signature
 @idempotent(ttl=300)
@@ -41,28 +68,20 @@ def pix_webhook():
 
     # Parse incoming JSON payload
     data = request.get_json(silent=True)
-    
-    if not isinstance(data, dict):
-        return jsonify({"error": "Invalid JSON payload"}), 400
-    
-    external_id = data.get("external_id")
-    value = data.get("value")
-    status = data.get("status")
-    event_id = data.get("event_id")
+
+    payload, error = validate_pix_webhook_payload(data)
+    if error:
+        body, status_code = error
+        return jsonify(body), status_code
+
+    external_id = payload["external_id"]
+    value = payload["value"]
+    status = payload["status"]
+    event_id = payload["event_id"]
 
     # Centralized safety guard: catch unexpected exceptions and ensure
     # we return a controlled 500 while logging the full stack trace.
     try:
-        # 🧾 1. Extrai payload e valida campos mínimos
-        if not event_id:
-            return jsonify({"error": "event_id is required"}), 400
-
-        if not external_id or not value or not status:
-            return jsonify({"error": "Invalid payload"}), 400
-
-        if status != "PAID":
-            return jsonify({"message": "Ignored"}), 200
-        
         # 📤 2. Ignora notificações que não representam pagamento concluído
         # ✅ Dedupe only for PAID events (avoid blocking a later PAID for same event_id)
         event_key = f"webhook:event:{event_id}"
@@ -156,5 +175,3 @@ def pix_webhook():
         # Fallback: log completo e resposta genérica. Não vaza detalhes.
         logger.exception("Unhandled error processing PIX webhook")
         return jsonify({"error": "Internal server error"}), 500
-
-
