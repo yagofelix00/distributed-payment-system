@@ -1,11 +1,11 @@
 from flask import Blueprint, request, jsonify
 from repository.database import db
-from db_models.charges import Charge
 from infrastructure.redis_client import redis_client
 from security.idempotency import idempotent
 from audit.logger import logger
 from security.webhook_signature import require_webhook_signature
 from decimal import Decimal, InvalidOperation
+from services.pix_webhook_service import resolve_charge_for_paid_webhook
 from services.charge_state_machine import (
     ChargeState,
     InvalidChargeTransition,
@@ -97,13 +97,13 @@ def pix_webhook():
             return jsonify({"error": "Service unavailable"}), 503
 
         # 🔍 3. Busca charges
-        charge = Charge.query.filter_by(external_id=external_id).first()
+        charge_result, charge = resolve_charge_for_paid_webhook(external_id)
 
-        if not charge:
+        if charge_result == "not_found":
             logger.error(f"Charge not found | external_id={external_id}")
             return jsonify({"error": "Charge not found"}), 404
 
-        if str(charge.status) in (ChargeState.PAID.value, ChargeState.EXPIRED.value):
+        if charge_result == "already_processed":
             logger.info(f"Ignored webhook for already finalized charge | id={charge.id} | status={charge.status}")
             return jsonify({"message": "Charge already processed"}), 200
 

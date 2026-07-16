@@ -68,6 +68,7 @@ def app(monkeypatch, fake_redis):
     app.register_blueprint(webhooks_bp)
 
     monkeypatch.setattr("routes.charges.redis_client", fake_redis)
+    monkeypatch.setattr("services.charge_service.redis_client", fake_redis)
     monkeypatch.setattr("routes.webhooks.redis_client", fake_redis)
     monkeypatch.setattr("security.idempotency.redis_client", fake_redis)
 
@@ -197,6 +198,34 @@ def test_webhook_paid_unknown_external_id_returns_404(client):
 
     assert response.status_code == 404
     assert response.get_json() == {"error": "Charge not found"}
+
+
+def test_webhook_paid_charge_with_new_event_id_returns_already_processed(client, app):
+    with app.app_context():
+        charge = _create_charge(
+            value=100.0,
+            status=ChargeStatus.PAID,
+            external_id="ext-already-paid-new-event",
+        )
+        charge_id = charge.id
+
+    response = _post_signed_webhook(
+        client,
+        {
+            "event_id": "evt_paid_charge_new_event",
+            "external_id": "ext-already-paid-new-event",
+            "value": 100.0,
+            "status": "PAID",
+        },
+        "idem-paid-charge-new-event",
+    )
+
+    assert response.status_code == 200
+    assert response.get_json() == {"message": "Charge already processed"}
+
+    with app.app_context():
+        refreshed = db.session.get(Charge, charge_id)
+        assert refreshed.status == ChargeStatus.PAID.value
 
 
 def test_webhook_non_numeric_value_returns_400_and_keeps_pending(client, app):
