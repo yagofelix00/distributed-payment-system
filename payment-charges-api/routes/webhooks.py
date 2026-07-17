@@ -4,10 +4,10 @@ from infrastructure.redis_client import redis_client
 from security.idempotency import idempotent
 from audit.logger import logger
 from security.webhook_signature import require_webhook_signature
-from decimal import Decimal, InvalidOperation
 from services.pix_webhook_service import (
     check_charge_ttl,
     resolve_charge_for_paid_webhook,
+    validate_payment_value,
 )
 from services.charge_state_machine import (
     ChargeState,
@@ -17,12 +17,6 @@ from services.charge_state_machine import (
 
 # Blueprint responsible for handling incoming payment webhooks
 webhooks_bp = Blueprint("webhooks", __name__)
-
-def to_decimal(value):
-    try:
-        return Decimal(str(value))
-    except (InvalidOperation, TypeError):
-        return None
 
 
 def validate_pix_webhook_payload(data):
@@ -130,14 +124,16 @@ def pix_webhook():
                 return jsonify({"error": "Internal server error"}), 500
       
         # ...
-        value_dec = to_decimal(value)
-        charge_value_dec = to_decimal(charge.value)
+        payment_value_result = validate_payment_value(value, charge.value)
 
-        if value_dec is None:
+        if payment_value_result == "invalid_type":
             return jsonify({"error": "Invalid value type"}), 400
 
-        if value_dec != charge_value_dec:
-            logger.warning(f"Invalid value on webhook | charge_id={charge.id} | got={value_dec} expected={charge_value_dec}")
+        if payment_value_result == "mismatch":
+            logger.warning(
+                f"Invalid value on webhook | charge_id={charge.id} | "
+                f"got={value} expected={charge.value}"
+            )
             return jsonify({"error": "Invalid value"}), 400
 
 

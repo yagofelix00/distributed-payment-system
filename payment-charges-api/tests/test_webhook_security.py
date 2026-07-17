@@ -365,6 +365,7 @@ def test_webhook_value_mismatch_returns_400_and_keeps_pending(client, app):
         },
     )
     assert response.status_code == 400
+    assert response.get_json() == {"error": "Invalid value"}
     with app.app_context():
         refreshed = Charge.query.get(charge.id)
         assert refreshed.status == ChargeStatus.PENDING.value
