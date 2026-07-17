@@ -5,7 +5,10 @@ from security.idempotency import idempotent
 from audit.logger import logger
 from security.webhook_signature import require_webhook_signature
 from decimal import Decimal, InvalidOperation
-from services.pix_webhook_service import resolve_charge_for_paid_webhook
+from services.pix_webhook_service import (
+    check_charge_ttl,
+    resolve_charge_for_paid_webhook,
+)
 from services.charge_state_machine import (
     ChargeState,
     InvalidChargeTransition,
@@ -107,19 +110,12 @@ def pix_webhook():
             logger.info(f"Ignored webhook for already finalized charge | id={charge.id} | status={charge.status}")
             return jsonify({"message": "Charge already processed"}), 200
 
-        # 🔑 Chave Redis usada para controlar TTL/validade da cobrança.
-        ttl_key = f"charge:ttl:{external_id}"
+        ttl_result = check_charge_ttl(external_id)
 
-        # Redis é a fonte da verdade para validar se a cobrança ainda pode
-        # ser confirmada por webhook. Tratamos erros de conexão com Redis
-        # de forma explícita: se ocorrer um erro, respondemos 503.
-        try:
-            ttl_exists = redis_client.exists(ttl_key)
-        except Exception:
-            logger.exception(f"Redis check failed for ttl_key={ttl_key}")
+        if ttl_result == "unavailable":
             return jsonify({"error": "Service unavailable"}), 503
 
-        if not ttl_exists:
+        if ttl_result == "missing":
             try:
                 logger.warning(f"Webhook received but charge TTL missing/expired | id={charge.id}")
                 return jsonify({"message": "Expired charge ignored"}), 200

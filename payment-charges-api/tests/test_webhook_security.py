@@ -69,6 +69,7 @@ def app(monkeypatch, fake_redis):
 
     monkeypatch.setattr("routes.charges.redis_client", fake_redis)
     monkeypatch.setattr("services.charge_service.redis_client", fake_redis)
+    monkeypatch.setattr("services.pix_webhook_service.redis_client", fake_redis)
     monkeypatch.setattr("routes.webhooks.redis_client", fake_redis)
     monkeypatch.setattr("security.idempotency.redis_client", fake_redis)
 
@@ -424,3 +425,48 @@ def test_webhook_duplicate_event_id_is_ignored_without_changing_paid_at(client, 
         refreshed = Charge.query.get(charge.id)
         assert refreshed.status == ChargeStatus.PAID.value
         assert refreshed.paid_at == first_paid_at
+
+
+def test_webhook_ttl_redis_failure_returns_503_and_keeps_charge_pending(
+    client, app, monkeypatch
+):
+    class TtlFailingRedis:
+        def __init__(self, delegate):
+            self.delegate = delegate
+
+        def exists(self, key):
+            if key.startswith("charge:ttl:"):
+                raise RuntimeError("Redis unavailable")
+            return self.delegate.exists(key)
+
+    external_id = "ext-ttl-redis-failure"
+    event_id = "evt-ttl-redis-failure"
+
+    with app.app_context():
+        charge = _create_charge(value=100.0, external_id=external_id)
+        charge_id = charge.id
+        app.fake_redis.setex(f"charge:ttl:{external_id}", 1800, "PENDING")
+
+    monkeypatch.setattr(
+        "services.pix_webhook_service.redis_client", TtlFailingRedis(app.fake_redis)
+    )
+
+    response = _post_signed_webhook(
+        client,
+        {
+            "event_id": event_id,
+            "external_id": external_id,
+            "value": 100.0,
+            "status": "PAID",
+        },
+        "idem-ttl-redis-failure",
+    )
+
+    assert response.status_code == 503
+    assert response.get_json() == {"error": "Service unavailable"}
+    assert app.fake_redis.exists(f"webhook:event:{event_id}") == 0
+
+    with app.app_context():
+        refreshed = db.session.get(Charge, charge_id)
+        assert refreshed.status == ChargeStatus.PENDING.value
+        assert refreshed.paid_at is None
