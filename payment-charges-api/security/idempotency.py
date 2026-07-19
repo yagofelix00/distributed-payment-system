@@ -1,6 +1,7 @@
 from flask import request, jsonify, make_response
 from functools import wraps
 from infrastructure.redis_client import redis_client
+import hashlib
 import json
 
 
@@ -10,6 +11,32 @@ def _is_valid_status_code(status_code):
         and not isinstance(status_code, bool)
         and 100 <= status_code <= 599
     )
+
+
+def _is_valid_request_fingerprint(fingerprint):
+    if not isinstance(fingerprint, str):
+        return False
+
+    prefix = "sha256:v1:"
+    if not fingerprint.startswith(prefix):
+        return False
+
+    digest = fingerprint[len(prefix):]
+
+    return (
+        len(digest) == 64
+        and all(char in "0123456789abcdef" for char in digest)
+    )
+
+
+def _request_fingerprint():
+    fingerprint_source = b"\n".join([
+        request.method.encode("utf-8"),
+        request.path.encode("utf-8"),
+        request.query_string,
+        request.get_data(cache=True),
+    ])
+    return f"sha256:v1:{hashlib.sha256(fingerprint_source).hexdigest()}"
 
 
 def idempotent(ttl=300):
@@ -31,6 +58,7 @@ def idempotent(ttl=300):
                 return jsonify({"error": "Idempotency-Key missing"}), 400
 
             redis_key = f"idempotency:{key}"
+            request_fingerprint = _request_fingerprint()
 
             # If we have a cached response, return it immediately (idempotent replay).
             # Legacy entries contain only the response body and are replayed as 200.
@@ -50,10 +78,22 @@ def idempotent(ttl=300):
                     if is_response_envelope:
                         status_code = cached_data["status_code"]
                         if _is_valid_status_code(status_code):
-                            return jsonify(cached_data["body"]), status_code
+                            has_fingerprint = "request_fingerprint" in cached_data
 
-                        # Invalid response envelopes are cache misses and will be
-                        # overwritten after the view executes successfully.
+                            if has_fingerprint:
+                                cached_fingerprint = cached_data["request_fingerprint"]
+
+                                if not _is_valid_request_fingerprint(cached_fingerprint):
+                                    cached_data = None
+                                elif cached_fingerprint != request_fingerprint:
+                                    return jsonify({
+                                        "error": "Idempotency-Key reused with different request"
+                                    }), 409
+                                else:
+                                    return jsonify(cached_data["body"]), status_code
+                            else:
+                                return jsonify(cached_data["body"]), status_code
+
                         cached_data = None
                     else:
                         return jsonify(cached_data)
@@ -77,6 +117,7 @@ def idempotent(ttl=300):
                 json.dumps({
                     "body": data,
                     "status_code": flask_response.status_code,
+                    "request_fingerprint": request_fingerprint,
                 })
             )
 
