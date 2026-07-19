@@ -297,6 +297,110 @@ def test_webhook_invalid_signature_returns_401_and_keeps_pending(client, app):
         refreshed = Charge.query.get(charge.id)
         assert refreshed.status == ChargeStatus.PENDING.value
 
+
+def test_webhook_same_idempotency_key_with_different_payload_returns_409(client, app):
+    external_id = "ext-idempotency-fingerprint-conflict"
+    first_event_id = "evt_idempotency_fingerprint_first"
+    second_event_id = "evt_idempotency_fingerprint_second"
+    idempotency_key = "idem-fingerprint-conflict"
+
+    with app.app_context():
+        charge = _create_charge(
+            value=100.0,
+            status=ChargeStatus.PENDING,
+            external_id=external_id,
+        )
+        charge_id = charge.id
+        app.fake_redis.setex(f"charge:ttl:{external_id}", 1800, "PENDING")
+
+    first_response = _post_signed_webhook(
+        client,
+        {
+            "event_id": first_event_id,
+            "external_id": external_id,
+            "value": 100.0,
+            "status": "PAID",
+        },
+        idempotency_key,
+    )
+
+    conflict_response = _post_signed_webhook(
+        client,
+        {
+            "event_id": second_event_id,
+            "external_id": external_id,
+            "value": 100.0,
+            "status": "PAID",
+        },
+        idempotency_key,
+    )
+
+    assert first_response.status_code == 200
+    assert first_response.get_json() == {"message": "Payment confirmed"}
+    assert conflict_response.status_code == 409
+    assert conflict_response.get_json() == {
+        "error": "Idempotency-Key reused with different request"
+    }
+    assert app.fake_redis.exists(f"webhook:event:{second_event_id}") == 0
+
+    with app.app_context():
+        refreshed = db.session.get(Charge, charge_id)
+        assert refreshed.status == ChargeStatus.PAID.value
+
+
+def test_webhook_invalid_signature_cannot_replay_cached_idempotent_response(client, app):
+    external_id = "ext-invalid-signature-no-replay"
+    event_id = "evt_invalid_signature_no_replay"
+    idempotency_key = "idem-invalid-signature-no-replay"
+
+    with app.app_context():
+        _create_charge(
+            value=100.0,
+            status=ChargeStatus.PENDING,
+            external_id=external_id,
+        )
+        app.fake_redis.setex(f"charge:ttl:{external_id}", 1800, "PENDING")
+
+    valid_response = _post_signed_webhook(
+        client,
+        {
+            "event_id": event_id,
+            "external_id": external_id,
+            "value": 100.0,
+            "status": "PAID",
+        },
+        idempotency_key,
+    )
+    assert valid_response.status_code == 200
+
+    replay_payload = {
+        "event_id": event_id,
+        "external_id": external_id,
+        "value": 100.0,
+        "status": "PAID",
+    }
+    replay_payload_bytes = json.dumps(
+        replay_payload,
+        separators=(",", ":"),
+        ensure_ascii=False,
+    ).encode()
+
+    replay_response = client.post(
+        "/webhooks/pix",
+        data=replay_payload_bytes,
+        headers={
+            "Content-Type": "application/json",
+            "X-Timestamp": str(int(time.time())),
+            "X-Signature": "sha256=invalidsignature",
+            "X-Event-Id": event_id,
+            "Idempotency-Key": idempotency_key,
+        },
+    )
+
+    assert replay_response.status_code == 401
+    assert replay_response.get_json() == {"error": "Invalid webhook signature"}
+
+
 def test_webhook_timestamp_outside_window_returns_401_or_400_and_keeps_pending(client, app):
     with app.app_context():
         charge = _create_charge(
