@@ -106,6 +106,9 @@ def idempotent(ttl=300):
             # - make_response ensures we always have a proper Response to inspect.
             flask_response = make_response(response)
 
+            if flask_response.status_code >= 500:
+                return flask_response
+
             data = flask_response.get_json()
 
             # Store the response for a limited time:

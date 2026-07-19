@@ -28,6 +28,29 @@ def _register_idempotent_route(
     return calls
 
 
+def _register_sequential_idempotent_route(
+    app,
+    responses,
+    rule="/idempotent-sequential-test",
+    endpoint="idempotent_sequential_test",
+):
+    calls = {"count": 0}
+
+    def view():
+        index = min(calls["count"], len(responses) - 1)
+        calls["count"] += 1
+        body, status_code = responses[index]
+        return jsonify(body), status_code
+
+    app.add_url_rule(
+        rule,
+        endpoint=endpoint,
+        view_func=idempotent(ttl=300)(view),
+        methods=["POST"],
+    )
+    return calls
+
+
 def _assert_cached_response_envelope(cached, body, status_code):
     assert cached["body"] == body
     assert cached["status_code"] == status_code
@@ -73,6 +96,57 @@ def test_replay_preserves_cached_body_and_status(app, body, status_code):
     _assert_cached_response_envelope(cached, body, status_code)
 
 
+@pytest.mark.parametrize("server_error_status", [500, 503])
+def test_server_error_response_is_not_cached_and_retry_can_store_success(
+    app,
+    server_error_status,
+):
+    calls = _register_sequential_idempotent_route(
+        app,
+        [
+            ({"error": "Temporary failure"}, server_error_status),
+            ({"message": "Recovered"}, 200),
+        ],
+    )
+    client = app.test_client()
+    key = f"server-error-then-success-{server_error_status}"
+    headers = {"Idempotency-Key": key}
+    redis_key = f"idempotency:{key}"
+
+    first_response = client.post(
+        "/idempotent-sequential-test",
+        data=b'{"a":1}',
+        headers=headers,
+    )
+
+    assert first_response.status_code == server_error_status
+    assert first_response.get_json() == {"error": "Temporary failure"}
+    assert calls["count"] == 1
+    assert redis_key not in app.fake_redis.store
+
+    second_response = client.post(
+        "/idempotent-sequential-test",
+        data=b'{"a":1}',
+        headers=headers,
+    )
+
+    assert second_response.status_code == 200
+    assert second_response.get_json() == {"message": "Recovered"}
+    assert calls["count"] == 2
+    cached = json.loads(app.fake_redis.store[redis_key])
+    _assert_cached_response_envelope(cached, {"message": "Recovered"}, 200)
+
+    third_response = client.post(
+        "/idempotent-sequential-test",
+        data=b'{"a":1}',
+        headers=headers,
+    )
+
+    assert third_response.status_code == 200
+    assert third_response.get_json() == {"message": "Recovered"}
+    assert calls["count"] == 2
+
+
 def test_same_key_with_different_body_returns_409_without_executing_view(app):
     calls = _register_idempotent_route(app, {"message": "Created"}, 201)
     client = app.test_client()
@@ -91,6 +165,30 @@ def test_same_key_with_different_body_returns_409_without_executing_view(app):
         "error": "Idempotency-Key reused with different request"
     }
     assert calls["count"] == 1
+
+
+def test_same_key_with_different_body_does_not_overwrite_cached_response(app):
+    calls = _register_idempotent_route(app, {"message": "Created"}, 201)
+    client = app.test_client()
+    key = "same-key-different-body-cache-preserved"
+    headers = {"Idempotency-Key": key}
+    redis_key = f"idempotency:{key}"
+
+    first_response = client.post("/idempotent-test", data=b'{"a":1}', headers=headers)
+    original_cached = app.fake_redis.store[redis_key]
+    conflict_response = client.post(
+        "/idempotent-test",
+        data=b'{"a":2}',
+        headers=headers,
+    )
+
+    assert first_response.status_code == 201
+    assert conflict_response.status_code == 409
+    assert conflict_response.get_json() == {
+        "error": "Idempotency-Key reused with different request"
+    }
+    assert calls["count"] == 1
+    assert app.fake_redis.store[redis_key] == original_cached
 
 
 def test_same_key_with_different_query_string_returns_409(app):
@@ -189,6 +287,25 @@ def test_legacy_envelope_without_fingerprint_replays_without_executing_view(app)
     assert calls["count"] == 0
 
 
+def test_cached_400_response_is_replayed_without_executing_view(app):
+    body = {"error": "Invalid value"}
+    calls = _register_idempotent_route(app, body, 400)
+    client = app.test_client()
+    key = "cached-400-response"
+    headers = {"Idempotency-Key": key}
+
+    first_response = client.post("/idempotent-test", data=b'{"a":1}', headers=headers)
+    replay_response = client.post("/idempotent-test", data=b'{"a":1}', headers=headers)
+
+    assert first_response.status_code == 400
+    assert first_response.get_json() == body
+    assert replay_response.status_code == 400
+    assert replay_response.get_json() == body
+    assert calls["count"] == 1
+    cached = json.loads(app.fake_redis.store[f"idempotency:{key}"])
+    _assert_cached_response_envelope(cached, body, 400)
+
+
 @pytest.mark.parametrize(
     "invalid_fingerprint",
     [
@@ -227,6 +344,25 @@ def test_invalid_cached_fingerprint_is_a_miss_and_is_overwritten(
     assert calls["count"] == 1
     cached = json.loads(app.fake_redis.store[f"idempotency:{key}"])
     _assert_cached_response_envelope(cached, body, 202)
+
+
+def test_invalid_cache_is_preserved_when_retry_returns_server_error(app):
+    key = "invalid-cache-then-server-error"
+    redis_key = f"idempotency:{key}"
+    invalid_cache = "{not-json"
+    app.fake_redis.store[redis_key] = invalid_cache
+    calls = _register_idempotent_route(app, {"error": "Temporary failure"}, 503)
+
+    response = app.test_client().post(
+        "/idempotent-test",
+        data=b'{"a":1}',
+        headers={"Idempotency-Key": key},
+    )
+
+    assert response.status_code == 503
+    assert response.get_json() == {"error": "Temporary failure"}
+    assert calls["count"] == 1
+    assert app.fake_redis.store[redis_key] == invalid_cache
 
 
 def test_legacy_cached_body_replays_as_200_without_executing_view(app):
