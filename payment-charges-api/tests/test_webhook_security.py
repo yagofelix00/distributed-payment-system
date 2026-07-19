@@ -575,3 +575,71 @@ def test_webhook_ttl_redis_failure_returns_503_and_keeps_charge_pending(
         refreshed = db.session.get(Charge, charge_id)
         assert refreshed.status == ChargeStatus.PENDING.value
         assert refreshed.paid_at is None
+
+
+def test_webhook_retry_after_transient_503_reexecutes_and_caches_success(
+    client, app, monkeypatch
+):
+    class TtlFailsOnceRedis:
+        def __init__(self, delegate):
+            self.delegate = delegate
+            self.failures = 0
+
+        def exists(self, key):
+            if key.startswith("charge:ttl:") and self.failures == 0:
+                self.failures += 1
+                raise RuntimeError("Redis unavailable")
+            return self.delegate.exists(key)
+
+    external_id = "ext-transient-ttl-retry"
+    event_id = "evt-transient-ttl-retry"
+    idempotency_key = "idem-transient-ttl-retry"
+    idempotency_cache_key = f"idempotency:{idempotency_key}"
+    payload = {
+        "event_id": event_id,
+        "external_id": external_id,
+        "value": 100.0,
+        "status": "PAID",
+    }
+
+    with app.app_context():
+        charge = _create_charge(value=100.0, external_id=external_id)
+        charge_id = charge.id
+        app.fake_redis.setex(f"charge:ttl:{external_id}", 1800, "PENDING")
+
+    flaky_redis = TtlFailsOnceRedis(app.fake_redis)
+    monkeypatch.setattr("services.pix_webhook_service.redis_client", flaky_redis)
+
+    first_response = _post_signed_webhook(client, payload, idempotency_key)
+
+    assert first_response.status_code == 503
+    assert first_response.get_json() == {"error": "Service unavailable"}
+    assert idempotency_cache_key not in app.fake_redis.store
+    assert app.fake_redis.exists(f"webhook:event:{event_id}") == 0
+
+    monkeypatch.setattr("services.pix_webhook_service.redis_client", app.fake_redis)
+
+    second_response = _post_signed_webhook(client, payload, idempotency_key)
+
+    assert second_response.status_code == 200
+    assert second_response.get_json() == {"message": "Payment confirmed"}
+    assert app.fake_redis.exists(f"webhook:event:{event_id}") == 1
+    cached = json.loads(app.fake_redis.store[idempotency_cache_key])
+    assert cached["body"] == {"message": "Payment confirmed"}
+    assert cached["status_code"] == 200
+
+    with app.app_context():
+        refreshed = db.session.get(Charge, charge_id)
+        assert refreshed.status == ChargeStatus.PAID.value
+        paid_at = refreshed.paid_at
+        assert paid_at is not None
+
+    third_response = _post_signed_webhook(client, payload, idempotency_key)
+
+    assert third_response.status_code == 200
+    assert third_response.get_json() == {"message": "Payment confirmed"}
+
+    with app.app_context():
+        refreshed = db.session.get(Charge, charge_id)
+        assert refreshed.status == ChargeStatus.PAID.value
+        assert refreshed.paid_at == paid_at
