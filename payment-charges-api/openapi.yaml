@@ -76,7 +76,6 @@ paths:
                 $ref: '#/components/schemas/Error'
               example:
                 error: "Charge not found"
-
   /webhooks/pix:
     post:
       tags: [Webhooks]
@@ -86,7 +85,9 @@ paths:
         Validates:
         - HMAC signature (X-Signature)
         - Timestamp tolerance window (X-Timestamp)
-        - Idempotency (event_id) via Redis
+        - Idempotency-Key replay protection via Redis
+        - Idempotency-Key request fingerprint conflict detection
+        - Event deduplication (event_id) via Redis
         - Charge TTL via Redis
       parameters:
         - in: header
@@ -102,8 +103,14 @@ paths:
             type: string
           example: "1700000000"
         - in: header
-          name: X-Event-Id
+          name: Idempotency-Key
           required: true
+          schema:
+            type: string
+          example: "idem_9f2c8d4c-aaaa-bbbb-cccc-111111111111"
+        - in: header
+          name: X-Event-Id
+          required: false
           schema:
             type: string
           example: "evt_9f2c8d4c-aaaa-bbbb-cccc-111111111111"
@@ -158,6 +165,14 @@ paths:
                 $ref: '#/components/schemas/Error'
               example:
                 error: "Charge not found"
+        "409":
+          description: Idempotency-Key reused with a different request
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              example:
+                error: "Idempotency-Key reused with different request"
 
 components:
   schemas:

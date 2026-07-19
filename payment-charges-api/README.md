@@ -20,7 +20,8 @@ Este serviço **não confirma pagamentos por chamada direta** — a confirmaçã
 
 * Webhooks assinados (**HMAC SHA-256**)
 * Proteção contra replay attack (**timestamp + tolerance window**)
-* **Idempotência** por `event_id` (Redis)
+* **Idempotência HTTP** por `Idempotency-Key` com fingerprint da requisição (Redis)
+* **Deduplicação de evento** por `event_id` (Redis)
 * **Redis como fonte de verdade** para expiração
 * Rate limiting em endpoints sensíveis
 * Observabilidade com **X-Request-Id**
@@ -63,7 +64,7 @@ payment-charges-api/
 │
 ├── security/                 # Segurança (camada transversal)
 │   ├── auth.py               # API key (quando aplicável)
-│   ├── idempotency.py        # Idempotência via Redis (event_id)
+│   ├── idempotency.py        # Idempotência via Redis (Idempotency-Key + fingerprint)
 │   └── webhook_signature.py  # HMAC + timestamp validation
 │
 ├── infrastructure/           # Integrações externas (Redis etc.)
@@ -102,7 +103,7 @@ Este serviço segue uma separação clara de responsabilidades:
 - **security/**  
   Camada transversal de segurança:
   - validação de webhooks (HMAC + timestamp)
-  - idempotência por `event_id`
+  - idempotência por `Idempotency-Key` e fingerprint
   - autenticação quando aplicável
 
 - **infrastructure/**  
@@ -221,7 +222,8 @@ POST /webhooks/pix
 ```
 X-Signature: sha256=...
 X-Timestamp: <unix-seconds>
-X-Event-Id: evt_xxx
+Idempotency-Key: idem_xxx
+X-Event-Id: evt_xxx  # opcional; event_id também deve estar no body
 ```
 
 #### Body
@@ -237,12 +239,40 @@ X-Event-Id: evt_xxx
 
 ---
 
+
+### Idempotência HTTP e fingerprint
+
+O webhook exige `Idempotency-Key` para proteger retries da mesma operação HTTP.
+Para cada chave, a API armazena a resposta junto de um fingerprint SHA-256 calculado com:
+
+- método HTTP;
+- path;
+- query string bruta;
+- raw body da requisição.
+
+Se a mesma `Idempotency-Key` for reutilizada com o mesmo fingerprint, a resposta armazenada é reproduzida com o mesmo body e status.
+Se a mesma chave for reutilizada com outro método, path, query string ou raw body, a API rejeita a chamada sem executar a view:
+
+```json
+{
+  "error": "Idempotency-Key reused with different request"
+}
+```
+
+Status HTTP: `409 Conflict`.
+
+Essa proteção é diferente da deduplicação por `event_id`: `Idempotency-Key` protege o replay HTTP de curto prazo; `event_id` identifica o evento de webhook no domínio e evita processamento duplicado.
+
+---
+
 ## 🔐 Segurança do Webhook
 
 * Assinatura HMAC baseada no **raw body**
 * Validação de timestamp (tolerance window)
-* Proteção contra eventos duplicados (idempotência)
+* Proteção contra retries HTTP com `Idempotency-Key` + fingerprint
+* Proteção contra eventos duplicados por `event_id`
 * Webhooks inválidos são rejeitados com status **401 / 400**
+* Reutilização de `Idempotency-Key` com requisição diferente é rejeitada com status **409**
 
 > Inspirado em implementações reais de provedores como **Stripe** e **Mercado Pago**.
 
