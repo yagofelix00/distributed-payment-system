@@ -263,6 +263,8 @@ Status HTTP: `409 Conflict`.
 
 Essa proteção é diferente da deduplicação por `event_id`: `Idempotency-Key` protege o replay HTTP de curto prazo; `event_id` identifica o evento de webhook no domínio e evita processamento duplicado.
 
+Respostas HTTP 5xx não são armazenadas no cache idempotente. Um retry com a mesma `Idempotency-Key` e o mesmo fingerprint pode reexecutar a operação, permitindo recuperação após falhas transitórias; respostas 2xx e 4xx continuam replayáveis. Possíveis efeitos parciais seguem protegidos por transação, state machine e deduplicação por `event_id`.
+
 ---
 
 ## 🔐 Segurança do Webhook
