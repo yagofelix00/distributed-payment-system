@@ -35,6 +35,7 @@ Este serviço **não confirma pagamentos por chamada direta** — a confirmaçã
 * Flask
 * Flask SQLAlchemy
 * SQLite (ambiente local)
+* Valores monetários com `Decimal` / `NUMERIC(12,2)`
 * Redis
 * Docker
 
@@ -176,9 +177,11 @@ Payload:
 
 ```json
 {
-  "value": 100.0
+  "value": 100.00
 }
 ```
+
+`value` é um valor monetário em JSON numérico com até duas casas decimais. Internamente, a API converte e persiste o valor como `Decimal` / `NUMERIC(12,2)`. Valores com mais de duas casas, zero, negativos, booleanos, `null`, `NaN` e infinitos são rejeitados em vez de arredondados silenciosamente.
 
 Resposta:
 
@@ -203,7 +206,7 @@ Resposta:
 ```json
 {
   "id": 1,
-  "value": 100.0,
+  "value": 100.00,
   "status": "PAID",
   "expires_at": "2026-01-24T12:34:56"
 }
@@ -232,10 +235,24 @@ X-Event-Id: evt_xxx  # opcional; event_id também deve estar no body
 {
   "event_id": "evt_xxx",
   "external_id": "uuid",
-  "value": 100.0,
+  "value": 100.00,
   "status": "PAID"
 }
 ```
+
+---
+
+### Valores monetários
+
+As cobranças usam precisão decimal fixa para valores monetários:
+
+- persistência: `NUMERIC(12,2)` via SQLAlchemy;
+- domínio Python: `Decimal`;
+- borda HTTP/cache: JSON numérico serializado explicitamente;
+- escala aceita: no máximo duas casas decimais;
+- valores inválidos são rejeitados, não arredondados.
+
+Como o ambiente local usa SQLite e não há migration framework nesta simulação, um banco SQLite local existente pode precisar ser removido/recriado após mudanças de schema no modelo `Charge`.
 
 ---
 

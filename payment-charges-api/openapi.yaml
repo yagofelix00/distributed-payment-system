@@ -24,7 +24,7 @@ paths:
             schema:
               $ref: '#/components/schemas/CreateChargeRequest'
             example:
-              value: 100.0
+              value: 100.00
       responses:
         "201":
           description: Charge created
@@ -65,7 +65,7 @@ paths:
                 $ref: '#/components/schemas/ChargeResponse'
               example:
                 id: 1
-                value: 100.0
+                value: 100.00
                 status: "PENDING"
                 expires_at: "2026-01-24T12:34:56.000000"
         "404":
@@ -130,7 +130,7 @@ paths:
             example:
               event_id: "evt_9f2c8d4c-aaaa-bbbb-cccc-111111111111"
               external_id: "d2e2b2b2-1111-2222-3333-444444444444"
-              value: 100.0
+              value: 100.00
               status: "PAID"
               timestamp: 1700000000
       responses:
@@ -192,8 +192,11 @@ components:
       properties:
         value:
           type: number
-          format: float
-          example: 100.0
+          multipleOf: 0.01
+          minimum: 0
+          exclusiveMinimum: true
+          description: Monetary amount with up to two decimal places. Invalid precision is rejected instead of rounded.
+          example: 100.00
 
     CreateChargeResponse:
       type: object
@@ -213,7 +216,8 @@ components:
           type: integer
         value:
           type: number
-          format: float
+          multipleOf: 0.01
+          description: Monetary amount returned as a JSON number; internally stored as fixed decimal precision.
         status:
           type: string
           enum: [PENDING, PAID, EXPIRED]
@@ -231,7 +235,10 @@ components:
           type: string
         value:
           type: number
-          format: float
+          multipleOf: 0.01
+          minimum: 0
+          exclusiveMinimum: true
+          description: Paid amount with up to two decimal places. Invalid precision is rejected instead of rounded.
         status:
           type: string
           enum: [PAID]
