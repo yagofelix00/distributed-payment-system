@@ -77,3 +77,16 @@ def test_validate_payment_value_returns_valid_for_equivalent_numeric_types(
     received_value, expected_value
 ):
     assert validate_payment_value(received_value, expected_value) == "valid"
+
+
+def test_validate_payment_value_returns_valid_for_decimal_cents():
+    assert validate_payment_value(0.10, Decimal("0.10")) == "valid"
+
+
+@pytest.mark.parametrize("received_value", [100.001, "100.001", "NaN", "Infinity", True, None])
+def test_validate_payment_value_returns_invalid_type_for_invalid_money(received_value):
+    assert validate_payment_value(received_value, Decimal("100.00")) == "invalid_type"
+
+
+def test_validate_payment_value_returns_mismatch_for_cent_difference():
+    assert validate_payment_value("100.01", Decimal("100.00")) == "mismatch"

@@ -1,3 +1,5 @@
+from decimal import Decimal
+
 import hashlib
 import hmac
 import json
@@ -220,6 +222,34 @@ def test_webhook_paid_charge_with_new_event_id_returns_already_processed(client,
             "status": "PAID",
         },
         "idem-paid-charge-new-event",
+    )
+
+    assert response.status_code == 200
+    assert response.get_json() == {"message": "Charge already processed"}
+
+    with app.app_context():
+        refreshed = db.session.get(Charge, charge_id)
+        assert refreshed.status == ChargeStatus.PAID.value
+
+
+def test_webhook_paid_charge_with_invalid_value_returns_already_processed(client, app):
+    with app.app_context():
+        charge = _create_charge(
+            value=Decimal("100.00"),
+            status=ChargeStatus.PAID,
+            external_id="ext-already-paid-invalid-value",
+        )
+        charge_id = charge.id
+
+    response = _post_signed_webhook(
+        client,
+        {
+            "event_id": "evt_paid_charge_invalid_value",
+            "external_id": "ext-already-paid-invalid-value",
+            "value": "abc",
+            "status": "PAID",
+        },
+        "idem-paid-charge-invalid-value",
     )
 
     assert response.status_code == 200
@@ -746,3 +776,130 @@ def test_concurrent_same_idempotency_key_allows_single_webhook_execution(
         refreshed = db.session.get(Charge, charge_id)
         assert refreshed.status == ChargeStatus.PAID.value
         assert refreshed.paid_at == paid_at
+
+
+def test_webhook_decimal_cent_value_confirms_matching_charge(client, app):
+    with app.app_context():
+        charge = _create_charge(
+            value=Decimal("0.10"),
+            status=ChargeStatus.PENDING,
+            external_id="ext-decimal-cent-value",
+        )
+        charge_id = charge.id
+        app.fake_redis.setex(f"charge:ttl:{charge.external_id}", 1800, "PENDING")
+
+    response = _post_signed_webhook(
+        client,
+        {
+            "event_id": "evt_decimal_cent_value",
+            "external_id": "ext-decimal-cent-value",
+            "value": 0.10,
+            "status": "PAID",
+        },
+        "idem-decimal-cent-value",
+    )
+
+    assert response.status_code == 200
+    assert response.get_json() == {"message": "Payment confirmed"}
+
+    with app.app_context():
+        refreshed = db.session.get(Charge, charge_id)
+        assert refreshed.status == ChargeStatus.PAID.value
+        assert refreshed.value == Decimal("0.10")
+
+
+@pytest.mark.parametrize("webhook_value", [10, 10.0, 10.00, "10.00"])
+def test_webhook_equivalent_decimal_scales_confirm_charge(client, app, webhook_value):
+    external_id = f"ext-equivalent-decimal-{str(webhook_value).replace('.', '-')}"
+    event_id = f"evt-equivalent-decimal-{str(webhook_value).replace('.', '-')}"
+
+    with app.app_context():
+        charge = _create_charge(
+            value=Decimal("10.00"),
+            status=ChargeStatus.PENDING,
+            external_id=external_id,
+        )
+        charge_id = charge.id
+        app.fake_redis.setex(f"charge:ttl:{external_id}", 1800, "PENDING")
+
+    response = _post_signed_webhook(
+        client,
+        {
+            "event_id": event_id,
+            "external_id": external_id,
+            "value": webhook_value,
+            "status": "PAID",
+        },
+        event_id,
+    )
+
+    assert response.status_code == 200
+    assert response.get_json() == {"message": "Payment confirmed"}
+
+    with app.app_context():
+        refreshed = db.session.get(Charge, charge_id)
+        assert refreshed.status == ChargeStatus.PAID.value
+
+
+def test_webhook_rejects_more_than_two_decimal_places_and_keeps_pending(client, app):
+    with app.app_context():
+        charge = _create_charge(
+            value=Decimal("10.00"),
+            status=ChargeStatus.PENDING,
+            external_id="ext-invalid-decimal-scale",
+        )
+        charge_id = charge.id
+        app.fake_redis.setex(f"charge:ttl:{charge.external_id}", 1800, "PENDING")
+
+    response = _post_signed_webhook(
+        client,
+        {
+            "event_id": "evt_invalid_decimal_scale",
+            "external_id": "ext-invalid-decimal-scale",
+            "value": 10.001,
+            "status": "PAID",
+        },
+        "idem-invalid-decimal-scale",
+    )
+
+    assert response.status_code == 400
+    assert response.get_json() == {"error": "Invalid value type"}
+
+    with app.app_context():
+        refreshed = db.session.get(Charge, charge_id)
+        assert refreshed.status == ChargeStatus.PENDING.value
+        assert refreshed.paid_at is None
+        assert app.fake_redis.exists(
+            "webhook:event:evt_invalid_decimal_scale"
+        ) == 0
+
+
+def test_webhook_cent_mismatch_keeps_charge_pending(client, app):
+    with app.app_context():
+        charge = _create_charge(
+            value=Decimal("10.00"),
+            status=ChargeStatus.PENDING,
+            external_id="ext-cent-mismatch",
+        )
+        charge_id = charge.id
+        app.fake_redis.setex(f"charge:ttl:{charge.external_id}", 1800, "PENDING")
+
+    response = _post_signed_webhook(
+        client,
+        {
+            "event_id": "evt_cent_mismatch",
+            "external_id": "ext-cent-mismatch",
+            "value": 10.01,
+            "status": "PAID",
+        },
+        "idem-cent-mismatch",
+    )
+
+    assert response.status_code == 400
+    assert response.get_json() == {"error": "Invalid value"}
+
+    with app.app_context():
+        refreshed = db.session.get(Charge, charge_id)
+        assert refreshed.status == ChargeStatus.PENDING.value
+        assert refreshed.paid_at is None
+        assert app.fake_redis.exists("webhook:event:evt_cent_mismatch") == 0

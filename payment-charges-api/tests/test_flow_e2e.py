@@ -1,3 +1,5 @@
+from decimal import Decimal
+
 import hashlib
 import hmac
 import json
@@ -251,3 +253,93 @@ def test_pix_e2e_duplicate_webhook_event_is_ignored_and_final_status_paid(paymen
     status_response = payment_client.get(f"{CHARGES_BASE}/{charge_data['id']}")
     assert status_response.status_code == 200
     assert status_response.get_json()["status"] == ChargeStatus.PAID.value
+
+
+def test_create_charge_with_decimal_value_persists_decimal_and_returns_json_number(
+    payment_client, bank_client, app
+):
+    response = payment_client.post(CHARGES_BASE, json={"value": 0.10})
+
+    assert response.status_code == 201
+    charge_data = response.get_json()
+
+    with app.app_context():
+        refreshed = db.session.get(Charge, charge_data["id"])
+        assert refreshed.value == Decimal("0.10")
+        assert isinstance(refreshed.value, Decimal)
+        assert app.fake_redis.exists(f"charge:ttl:{refreshed.external_id}") == 1
+
+    register_response = bank_client.post(
+        "/bank/pix/charges",
+        json={
+            "external_id": charge_data["external_id"],
+            "value": 0.10,
+            "webhook_url": "/webhooks/pix",
+        },
+    )
+    assert register_response.status_code == 201
+
+    pay_response = bank_client.post(
+        "/bank/pix/pay",
+        json={"external_id": charge_data["external_id"]},
+    )
+    assert pay_response.status_code == 200
+    assert pay_response.get_json()["webhook_status_code"] == 200
+
+    status_response = payment_client.get(f"{CHARGES_BASE}/{charge_data['id']}")
+
+    assert status_response.status_code == 200
+    status_body = status_response.get_json()
+    assert status_body["value"] == 0.1
+    assert isinstance(status_body["value"], float)
+    assert status_body["status"] == ChargeStatus.PAID.value
+    cache_key = f"charge:{charge_data['id']}"
+    assert app.fake_redis.exists(cache_key) == 1
+
+    with app.app_context():
+        refreshed = db.session.get(Charge, charge_data["id"])
+        refreshed.value = Decimal("9.99")
+        db.session.commit()
+
+    cached_response = payment_client.get(f"{CHARGES_BASE}/{charge_data['id']}")
+
+    assert cached_response.status_code == 200
+    assert cached_response.get_json() == status_body
+    assert isinstance(cached_response.get_json()["value"], float)
+
+
+def test_create_charge_rejects_more_than_two_decimal_places_without_ttl(payment_client, app):
+    response = payment_client.post(CHARGES_BASE, json={"value": 10.001})
+
+    assert response.status_code == 400
+    assert response.get_json() == {"error": "Invalid value"}
+
+    with app.app_context():
+        assert Charge.query.count() == 0
+    assert app.fake_redis.store == {}
+
+
+@pytest.mark.parametrize("invalid_value", [True, None, "abc", "NaN", "Infinity"])
+def test_create_charge_rejects_invalid_money_values(payment_client, invalid_value):
+    response = payment_client.post(CHARGES_BASE, json={"value": invalid_value})
+
+    assert response.status_code == 400
+    assert response.get_json() == {"error": "Invalid value"}
+
+
+def test_pix_e2e_decimal_sensitive_value_paid(payment_client, bank_client):
+    charge_data = _create_charge_and_register_bank(payment_client, bank_client, value=19.99)
+
+    pay_response = bank_client.post(
+        "/bank/pix/pay",
+        json={"external_id": charge_data["external_id"]},
+    )
+
+    assert pay_response.status_code == 200
+    assert pay_response.get_json()["webhook_status_code"] == 200
+
+    status_response = payment_client.get(f"{CHARGES_BASE}/{charge_data['id']}")
+
+    assert status_response.status_code == 200
+    assert status_response.get_json()["status"] == ChargeStatus.PAID.value
+    assert status_response.get_json()["value"] == 19.99
