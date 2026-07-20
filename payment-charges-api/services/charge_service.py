@@ -8,16 +8,19 @@ from exceptions.charge_exceptions import (
 )
 from audit.logger import logger
 from infrastructure.redis_client import redis_client
+from services.money import InvalidMoneyValue, parse_money
 
 
 def create_charge(value):
 
-    if value <= 0:
+    try:
+        money_value = parse_money(value)
+    except InvalidMoneyValue:
         raise InvalidChargeValue("Invalid value")
 
     # Charges start as PENDING. Payment confirmation must happen asynchronously via webhook.
     charge = Charge(
-        value=value,
+        value=money_value,
         status=ChargeStatus.PENDING,
         external_id=str(uuid.uuid4()),  # Public identifier shared with the bank / external systems
         created_at=datetime.utcnow(),
@@ -51,9 +54,14 @@ def confirm_payment(charge, value):
         )
         raise ChargeNotPayable("Charge not payable")
 
-    if charge.value != value:
+    try:
+        money_value = parse_money(value)
+    except InvalidMoneyValue:
+        raise InvalidChargeValue("Invalid value")
+
+    if charge.value != money_value:
         logger.warning(
-            f"Payment value mismatch | charge_id={charge.id} | expected={charge.value} | received={value}"
+            f"Payment value mismatch | charge_id={charge.id} | expected={charge.value} | received={money_value}"
         )
         raise InvalidChargeValue("Invalid value")
 

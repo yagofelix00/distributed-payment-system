@@ -31,7 +31,7 @@ def validate_pix_webhook_payload(data):
     if not event_id:
         return None, ({"error": "event_id is required"}, 400)
 
-    if not external_id or not value or not status:
+    if not external_id or value is None or not status:
         return None, ({"error": "Invalid payload"}, 400)
 
     if status != "PAID":

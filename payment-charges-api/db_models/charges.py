@@ -10,7 +10,10 @@ class ChargeStatus(str, Enum):
 
 class Charge(db.Model):
     id = db.Column(db.Integer, primary_key=True)
-    value = db.Column(db.Float, nullable=False)
+    value = db.Column(
+        db.Numeric(12, 2, asdecimal=True),
+        nullable=False,
+    )
     status = db.Column(db.String(20), default=ChargeStatus.PENDING)
     external_id = db.Column(db.String(36), unique=True, nullable=False)
     created_at = db.Column(db.DateTime, default=datetime.utcnow)

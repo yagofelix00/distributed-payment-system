@@ -7,6 +7,7 @@ from extensions import limiter
 from audit.logger import logger
 from exceptions.charge_exceptions import InvalidChargeValue
 from services.charge_service import create_charge as create_charge_service
+from services.money import money_to_json_number
 from services.charge_state_machine import (
     ChargeState,
     InvalidChargeTransition,
@@ -76,7 +77,7 @@ def get_charge(charge_id):
 
     response = {
         "id": charge.id,
-        "value": charge.value,
+        "value": money_to_json_number(charge.value),
         "status": charge.status,
         # Optional: expires_at could be derived if you store created_at + TTL, but Redis TTL is the authority here.
     }
