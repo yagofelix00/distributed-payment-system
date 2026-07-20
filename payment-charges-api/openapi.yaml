@@ -86,6 +86,7 @@ paths:
         - HMAC signature (X-Signature)
         - Timestamp tolerance window (X-Timestamp)
         - Idempotency-Key replay protection via Redis
+        - Idempotency-Key concurrent execution lock via Redis
         - Idempotency-Key request fingerprint conflict detection
         - Event deduplication (event_id) via Redis
         - Charge TTL via Redis
@@ -166,13 +167,22 @@ paths:
               example:
                 error: "Charge not found"
         "409":
-          description: Idempotency-Key reused with a different request
+          description: >
+            Idempotency conflict. The Idempotency-Key was reused with a different
+            request, or an equivalent request is still being processed.
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/Error'
-              example:
-                error: "Idempotency-Key reused with different request"
+              examples:
+                differentRequest:
+                  summary: Idempotency-Key reused with a different request
+                  value:
+                    error: "Idempotency-Key reused with different request"
+                alreadyInProgress:
+                  summary: Equivalent idempotent request is still being processed
+                  value:
+                    error: "Idempotency request already in progress"
 
 components:
   schemas:

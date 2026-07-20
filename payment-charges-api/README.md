@@ -251,6 +251,16 @@ Para cada chave, a API armazena a resposta junto de um fingerprint SHA-256 calcu
 - raw body da requisição.
 
 Se a mesma `Idempotency-Key` for reutilizada com o mesmo fingerprint, a resposta armazenada é reproduzida com o mesmo body e status.
+Enquanto a primeira requisição ainda está em processamento e a resposta final ainda não foi gravada, outra requisição concorrente com a mesma `Idempotency-Key` não executa a view simultaneamente. A API usa um lock Redis curto por chave (`idempotency:{key}:lock`) e retorna uma resposta transitória que não é armazenada no cache idempotente:
+
+```json
+{
+  "error": "Idempotency request already in progress"
+}
+```
+
+Status HTTP: `409 Conflict`. Um retry posterior com a mesma chave e o mesmo fingerprint pode receber o replay da resposta final gravada pela primeira requisição.
+
 Se a mesma chave for reutilizada com outro método, path, query string ou raw body, a API rejeita a chamada sem executar a view:
 
 ```json
@@ -272,6 +282,7 @@ Respostas HTTP 5xx não são armazenadas no cache idempotente. Um retry com a me
 * Assinatura HMAC baseada no **raw body**
 * Validação de timestamp (tolerance window)
 * Proteção contra retries HTTP com `Idempotency-Key` + fingerprint
+* Lock Redis por `Idempotency-Key` para impedir execução concorrente duplicada
 * Proteção contra eventos duplicados por `event_id`
 * Webhooks inválidos são rejeitados com status **401 / 400**
 * Reutilização de `Idempotency-Key` com requisição diferente é rejeitada com status **409**
