@@ -1,6 +1,7 @@
 import hashlib
 import hmac
 import json
+import threading
 import time
 
 import pytest
@@ -638,6 +639,108 @@ def test_webhook_retry_after_transient_503_reexecutes_and_caches_success(
 
     assert third_response.status_code == 200
     assert third_response.get_json() == {"message": "Payment confirmed"}
+
+    with app.app_context():
+        refreshed = db.session.get(Charge, charge_id)
+        assert refreshed.status == ChargeStatus.PAID.value
+        assert refreshed.paid_at == paid_at
+
+
+def test_concurrent_same_idempotency_key_allows_single_webhook_execution(
+    app,
+    monkeypatch,
+):
+    import routes.webhooks as webhooks_module
+
+    external_id = "ext-concurrent-idempotency"
+    event_id = "evt-concurrent-idempotency"
+    idempotency_key = "idem-concurrent-idempotency"
+    idempotency_cache_key = f"idempotency:{idempotency_key}"
+    entered_view = threading.Event()
+    release_view = threading.Event()
+    validation_calls = {"count": 0}
+    original_validate = webhooks_module.validate_pix_webhook_payload
+
+    with app.app_context():
+        charge = _create_charge(value=100.0, external_id=external_id)
+        charge_id = charge.id
+        app.fake_redis.setex(f"charge:ttl:{external_id}", 1800, "PENDING")
+
+    def blocking_validate(data):
+        validation_calls["count"] += 1
+        result = original_validate(data)
+        if validation_calls["count"] == 1:
+            entered_view.set()
+            assert release_view.wait(timeout=2)
+        return result
+
+    monkeypatch.setattr(
+        webhooks_module,
+        "validate_pix_webhook_payload",
+        blocking_validate,
+    )
+
+    payload = {
+        "event_id": event_id,
+        "external_id": external_id,
+        "value": 100.0,
+        "status": "PAID",
+    }
+    first_result = {}
+
+    def first_request():
+        client = app.test_client()
+        first_result["response"] = _post_signed_webhook(
+            client,
+            payload,
+            idempotency_key,
+        )
+
+    thread = threading.Thread(target=first_request)
+    thread.start()
+    assert entered_view.wait(timeout=2)
+    assert validation_calls["count"] == 1
+
+    in_progress_response = _post_signed_webhook(
+        app.test_client(),
+        payload,
+        idempotency_key,
+    )
+
+    assert in_progress_response.status_code == 409
+    assert in_progress_response.get_json() == {
+        "error": "Idempotency request already in progress"
+    }
+    assert validation_calls["count"] == 1
+
+    release_view.set()
+    thread.join(timeout=2)
+    assert not thread.is_alive()
+
+    first_response = first_result["response"]
+    assert first_response.status_code == 200
+    assert first_response.get_json() == {"message": "Payment confirmed"}
+    assert app.fake_redis.exists(f"webhook:event:{event_id}") == 1
+
+    with app.app_context():
+        refreshed = db.session.get(Charge, charge_id)
+        assert refreshed.status == ChargeStatus.PAID.value
+        paid_at = refreshed.paid_at
+        assert paid_at is not None
+
+    cached = json.loads(app.fake_redis.store[idempotency_cache_key])
+    assert cached["body"] == {"message": "Payment confirmed"}
+    assert cached["status_code"] == 200
+
+    replay_response = _post_signed_webhook(
+        app.test_client(),
+        payload,
+        idempotency_key,
+    )
+
+    assert replay_response.status_code == 200
+    assert replay_response.get_json() == {"message": "Payment confirmed"}
+    assert validation_calls["count"] == 1
 
     with app.app_context():
         refreshed = db.session.get(Charge, charge_id)
