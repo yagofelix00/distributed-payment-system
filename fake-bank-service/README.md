@@ -196,6 +196,16 @@ X-Event-Id: evt_xxx
 X-Request-Id: demo-001
 ```
 
+A assinatura enviada pelo fake bank autentica o timestamp literal e o body bruto:
+
+```text
+signed_message = UTF8(X-Timestamp) + "." + raw_request_body
+digest = HMAC-SHA256(WEBHOOK_SECRET, signed_message)
+X-Signature = "sha256=" + lowercase_hex(digest)
+```
+
+`X-Timestamp` usa Unix epoch em segundos, somente dígitos. Cada tentativa de retry gera novo `X-Timestamp` e nova `X-Signature`, mantendo o mesmo payload e `event_id`.
+
 ### Body
 
 ```json
@@ -212,6 +222,7 @@ X-Request-Id: demo-001
 ## 🔁 Retry + Backoff
 
 * Webhooks são reenviados automaticamente em caso de falha
+* Cada tentativa recalcula `X-Timestamp` e `X-Signature` para o mesmo payload
 * Estratégia utilizada:
 
   * Exponential backoff
@@ -280,14 +291,15 @@ Payload:
 ```
 
 > O reprocessamento respeita idempotência e marca o evento como `replayed`
-> após sucesso.
+> após sucesso. O replay redispara o payload original e gera novos
+> `X-Timestamp` e `X-Signature`; assinatura antiga não é persistida nem reutilizada.
 
 ---
 
 ## 🔐 Segurança
 
-* Assinatura HMAC baseada no **raw body**
-* Timestamp para proteção contra replay
+* Assinatura HMAC baseada em **`X-Timestamp` literal + `.` + raw body**
+* Timestamp Unix em segundos para proteção contra replay
 * Idempotência por `event_id`
 * Headers obrigatórios validados no sistema receptor
 

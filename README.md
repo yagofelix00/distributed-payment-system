@@ -289,6 +289,17 @@ X-Event-Id: evt_xxx
 X-Request-Id: demo-001
 ```
 
+A assinatura autentica o timestamp literal e o corpo bruto do webhook:
+
+```text
+signed_message = UTF8(X-Timestamp) + "." + raw_request_body
+digest = HMAC-SHA256(WEBHOOK_SECRET, signed_message)
+X-Signature = "sha256=" + lowercase_hex(digest)
+```
+
+`X-Timestamp` usa Unix epoch em segundos, somente dígitos. Alterar o
+timestamp ou qualquer byte do body invalida a assinatura.
+
 ### Body
 
 ```json
@@ -316,6 +327,16 @@ X-Request-Id: demo-001
 ---
 
 ## 🧪 Testes
+
+Para executar as suites do monorepo com isolamento entre serviços:
+
+```powershell
+.\scripts\test_all.ps1
+```
+
+O script roda cada suite em um processo Python separado porque os serviços
+possuem modulos internos com nomes top-level iguais, como `security`,
+`services` e `routes`.
 
 ```bash
 pytest payment-charges-api/tests -q

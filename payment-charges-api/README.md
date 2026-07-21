@@ -230,6 +230,16 @@ Idempotency-Key: idem_xxx
 X-Event-Id: evt_xxx  # opcional; event_id também deve estar no body
 ```
 
+A assinatura deve ser calculada sobre o timestamp literal do header e o body bruto, sem reserializar JSON:
+
+```text
+signed_message = UTF8(X-Timestamp) + "." + raw_request_body
+digest = HMAC-SHA256(WEBHOOK_SECRET, signed_message)
+X-Signature = "sha256=" + lowercase_hex(digest)
+```
+
+`X-Timestamp` usa Unix epoch em segundos, aceita somente dígitos e deve estar dentro da janela de 300 segundos. Alterar o timestamp ou qualquer byte do body invalida a assinatura.
+
 #### Body
 
 ```json
@@ -312,8 +322,8 @@ Falhas de payload, valor monetário inválido, mismatch de valor, charge inexist
 
 ## 🔐 Segurança do Webhook
 
-* Assinatura HMAC baseada no **raw body**
-* Validação de timestamp (tolerance window)
+* Assinatura HMAC baseada em **`X-Timestamp` literal + `.` + raw body**
+* Validação de timestamp em Unix seconds, somente dígitos, com tolerance window de 300 segundos
 * Proteção contra retries HTTP com `Idempotency-Key` + fingerprint
 * Lock Redis por `Idempotency-Key` para impedir execução concorrente duplicada
 * Lock Redis por `event_id` para impedir execução concorrente duplicada do mesmo evento

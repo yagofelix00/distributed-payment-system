@@ -83,8 +83,8 @@ paths:
       description: |
         Receives a payment confirmation event from the bank (Fake Bank).
         Validates:
-        - HMAC signature (X-Signature)
-        - Timestamp tolerance window (X-Timestamp)
+        - HMAC signature (X-Signature) over the literal X-Timestamp header, a dot separator, and the raw request body
+        - Timestamp tolerance window (X-Timestamp, Unix epoch seconds, digits only)
         - Idempotency-Key replay protection via Redis
         - Idempotency-Key concurrent execution lock via Redis
         - Idempotency-Key request fingerprint conflict detection
@@ -97,12 +97,16 @@ paths:
           required: true
           schema:
             type: string
+            pattern: '^sha256=[0-9a-f]{64}$'
+          description: 'HMAC-SHA256 as sha256=<lowercase-hex>, calculated over UTF8(X-Timestamp) + "." + raw_request_body.'
           example: "sha256=ab12cd34..."
         - in: header
           name: X-Timestamp
           required: true
           schema:
             type: string
+            pattern: '^[0-9]+$'
+          description: Unix epoch seconds. The literal header value is part of the HMAC signed message.
           example: "1700000000"
         - in: header
           name: Idempotency-Key
@@ -133,7 +137,6 @@ paths:
               external_id: "d2e2b2b2-1111-2222-3333-444444444444"
               value: 100.00
               status: "PAID"
-              timestamp: 1700000000
       responses:
         "200":
           description: Webhook processed or safely ignored (idempotent)
@@ -245,7 +248,7 @@ components:
 
     WebhookEvent:
       type: object
-      required: [event_id, external_id, value, status, timestamp]
+      required: [event_id, external_id, value, status]
       properties:
         event_id:
           type: string
@@ -260,9 +263,6 @@ components:
         status:
           type: string
           enum: [PAID]
-        timestamp:
-          type: integer
-          description: Unix epoch seconds
 
     Error:
       type: object
