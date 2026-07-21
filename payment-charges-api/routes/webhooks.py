@@ -1,7 +1,16 @@
 from flask import Blueprint, request, jsonify
-from repository.database import db
-from infrastructure.redis_client import redis_client
 from security.idempotency import idempotent
+from security.webhook_event_deduplication import (
+    EVENT_CLAIM_ACQUIRED,
+    EVENT_CLAIM_PROCESSED,
+    EVENT_CLAIM_PROCESSING,
+    EVENT_CLAIM_UNAVAILABLE,
+    acquire_event_claim,
+    event_lock_key,
+    event_key,
+    mark_event_processed,
+    release_event_claim,
+)
 from audit.logger import logger
 from security.webhook_signature import require_webhook_signature
 from services.pix_webhook_service import (
@@ -76,23 +85,39 @@ def pix_webhook():
     status = payload["status"]
     event_id = payload["event_id"]
 
+    claim_status, claim_token = acquire_event_claim(event_id)
+
+    if claim_status == EVENT_CLAIM_PROCESSED:
+        logger.info(
+            "Duplicate webhook event ignored",
+            extra={"event_id": event_id, "external_id": external_id}
+        )
+        return jsonify({"message": "Duplicate event ignored"}), 200
+
+    if claim_status == EVENT_CLAIM_PROCESSING:
+        logger.info(
+            "Webhook event processing already in progress",
+            extra={"event_id": event_id, "external_id": external_id}
+        )
+        return jsonify({"error": "Event processing in progress"}), 503
+
+    if claim_status == EVENT_CLAIM_UNAVAILABLE:
+        return jsonify({"error": "Service unavailable"}), 503
+
+    if claim_status != EVENT_CLAIM_ACQUIRED:
+        logger.error(
+            "Unexpected webhook event claim status",
+            extra={
+                "event_id": event_id,
+                "external_id": external_id,
+                "claim_status": claim_status,
+            },
+        )
+        return jsonify({"error": "Service unavailable"}), 503
+
     # Centralized safety guard: catch unexpected exceptions and ensure
     # we return a controlled 500 while logging the full stack trace.
     try:
-        # 📤 2. Ignora notificações que não representam pagamento concluído
-        # ✅ Dedupe only for PAID events (avoid blocking a later PAID for same event_id)
-        event_key = f"webhook:event:{event_id}"
-        try:
-            if redis_client.exists(event_key):
-                logger.info(
-                    "Duplicate webhook event ignored",
-                    extra={"event_id": event_id, "external_id": external_id}
-                )
-                return jsonify({"message": "Duplicate event ignored"}), 200
-        except Exception:
-            logger.exception(f"Redis check failed for event dedupe key={event_key}")
-            return jsonify({"error": "Service unavailable"}), 503
-
         # 🔍 3. Busca charges
         charge_result, charge = resolve_charge_for_paid_webhook(external_id)
 
@@ -136,7 +161,6 @@ def pix_webhook():
             )
             return jsonify({"error": "Invalid value"}), 400
 
-
         try:
             transition_charge(charge, ChargeState.PAID)
         except InvalidChargeTransition:
@@ -146,13 +170,17 @@ def pix_webhook():
             logger.exception(f"Failed to commit payment for charge | id={charge.id}")
             return jsonify({"error": "Internal server error"}), 500
         
-        # Mark event as processed only after successful state transition
-        try:
-            redis_client.setex(event_key, 86400, "1")
-        except Exception:
-            logger.exception(
+        mark_result = mark_event_processed(event_id, claim_token)
+        if mark_result != EVENT_CLAIM_PROCESSED:
+            logger.error(
                 "Failed to persist webhook dedupe key after successful processing",
-                extra={"event_id": event_id, "external_id": external_id}
+                extra={
+                    "event_id": event_id,
+                    "external_id": external_id,
+                    "event_key": event_key(event_id),
+                    "lock_key": event_lock_key(event_id),
+                    "mark_result": mark_result,
+                }
             )
 
         # Log informativo para auditoria / monitoramento.
@@ -167,3 +195,5 @@ def pix_webhook():
         # Fallback: log completo e resposta genérica. Não vaza detalhes.
         logger.exception("Unhandled error processing PIX webhook")
         return jsonify({"error": "Internal server error"}), 500
+    finally:
+        release_event_claim(event_id, claim_token)
