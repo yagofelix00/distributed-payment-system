@@ -55,8 +55,9 @@ def _create_charge(value=100.0, status=ChargeStatus.PENDING, external_id="ext-1"
     return charge
 
 
-def _sign_payload(secret, payload_bytes):
-    digest = hmac.new(secret.encode(), payload_bytes, hashlib.sha256).hexdigest()
+def _sign_payload(secret, timestamp_text, payload_bytes):
+    signed_message = timestamp_text.encode("utf-8") + b"." + payload_bytes
+    digest = hmac.new(secret.encode(), signed_message, hashlib.sha256).hexdigest()
     return f"sha256={digest}"
 
 
@@ -111,14 +112,15 @@ def test_webhook_paid_ignored_for_expired(client, app):
         "status": "PAID",
     }
     payload_bytes = json.dumps(payload, separators=(",", ":"), ensure_ascii=False).encode()
-    signature = _sign_payload("test-webhook-secret", payload_bytes)
+    timestamp_text = str(int(time.time()))
+    signature = _sign_payload("test-webhook-secret", timestamp_text, payload_bytes)
 
     response = client.post(
         "/webhooks/pix",
         data=payload_bytes,
         headers={
             "Content-Type": "application/json",
-            "X-Timestamp": str(int(time.time())),
+            "X-Timestamp": timestamp_text,
             "X-Signature": signature,
             "Idempotency-Key": "idem-expired-webhook",
             "X-Event-Id": "evt_test_001",

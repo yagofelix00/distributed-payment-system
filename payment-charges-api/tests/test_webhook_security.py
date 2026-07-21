@@ -13,12 +13,41 @@ from db_models.charges import Charge, ChargeStatus
 from repository.database import db
 from routes.charges import charges_bp
 from routes.webhooks import webhooks_bp
+from security.webhook_signature import build_signed_message, calculate_signature
 
 
 
-def _sign_payload(secret, payload_bytes):
-    digest = hmac.new(secret.encode(), payload_bytes, hashlib.sha256).hexdigest()
+def _sign_payload(secret, timestamp_text, payload_bytes):
+    signed_message = timestamp_text.encode("utf-8") + b"." + payload_bytes
+    digest = hmac.new(secret.encode(), signed_message, hashlib.sha256).hexdigest()
     return f"sha256={digest}"
+
+
+def test_build_signed_message_uses_literal_timestamp_and_raw_body_bytes():
+    assert build_signed_message("1700000000", b'{"a":1}') == b'1700000000.{"a":1}'
+
+
+def test_calculate_signature_changes_when_timestamp_or_body_changes():
+    secret = b"test-webhook-secret"
+    body = '{"message":"olá"}'.encode("utf-8")
+
+    signature = calculate_signature(secret, "1700000000", body)
+
+    assert signature.startswith("sha256=")
+    assert signature == calculate_signature(secret, "1700000000", body)
+    assert signature != calculate_signature(secret, "1700000001", body)
+    assert signature != calculate_signature(secret, "1700000000", b'{"message":"ola"}')
+
+
+def test_calculate_signature_does_not_normalize_timestamp_text():
+    secret = b"test-webhook-secret"
+    body = b""
+
+    assert calculate_signature(secret, "01700000000", body) != calculate_signature(
+        secret,
+        "1700000000",
+        body,
+    )
 
 
 def _create_charge(value=100.0, status=ChargeStatus.PENDING, external_id="ext-security-1"):
@@ -41,10 +70,15 @@ def _post_signed_webhook(client, payload, idempotency_key):
         ).encode()
         event_id = payload.get("event_id") if isinstance(payload, dict) else None
 
+    timestamp_text = str(int(time.time()))
     headers = {
         "Content-Type": "application/json",
-        "X-Timestamp": str(int(time.time())),
-        "X-Signature": _sign_payload("test-webhook-secret", payload_bytes),
+        "X-Timestamp": timestamp_text,
+        "X-Signature": _sign_payload(
+            "test-webhook-secret",
+            timestamp_text,
+            payload_bytes,
+        ),
         "Idempotency-Key": idempotency_key,
     }
 
@@ -56,6 +90,14 @@ def _post_signed_webhook(client, payload, idempotency_key):
         data=payload_bytes,
         headers=headers,
     )
+
+
+def _assert_charge_still_pending(app, charge_id, event_id):
+    with app.app_context():
+        refreshed = db.session.get(Charge, charge_id)
+        assert refreshed.status == ChargeStatus.PENDING.value
+        assert app.fake_redis.exists(f"webhook:event:{event_id}") == 0
+        assert app.fake_redis.exists(f"webhook:event:{event_id}:lock") == 0
 
 
 @pytest.fixture
@@ -329,6 +371,313 @@ def test_webhook_invalid_signature_returns_401_and_keeps_pending(client, app):
         assert refreshed.status == ChargeStatus.PENDING.value
 
 
+@pytest.mark.parametrize(
+    "case_name",
+    [
+        "missing_signature",
+        "missing_timestamp",
+        "wrong_prefix_sha512",
+        "wrong_prefix_case",
+        "uppercase_digest",
+        "wrong_secret",
+    ],
+)
+def test_webhook_rejects_signature_header_edge_cases_without_payment_flow(
+    client,
+    app,
+    case_name,
+):
+    external_id = f"ext-signature-header-{case_name}"
+    event_id = f"evt_signature_header_{case_name}"
+
+    with app.app_context():
+        charge = _create_charge(
+            value=100.0,
+            status=ChargeStatus.PENDING,
+            external_id=external_id,
+        )
+        charge_id = charge.id
+        app.fake_redis.setex(f"charge:ttl:{external_id}", 1800, "PENDING")
+
+    payload = {
+        "event_id": event_id,
+        "external_id": external_id,
+        "value": 100.0,
+        "status": "PAID",
+    }
+    payload_bytes = json.dumps(payload, separators=(",", ":"), ensure_ascii=False).encode()
+    timestamp_text = str(int(time.time()))
+    signature = _sign_payload("test-webhook-secret", timestamp_text, payload_bytes)
+    headers = {
+        "Content-Type": "application/json",
+        "X-Timestamp": timestamp_text,
+        "X-Signature": signature,
+        "X-Event-Id": event_id,
+        "Idempotency-Key": f"idem-signature-header-{case_name}",
+    }
+
+    if case_name == "missing_signature":
+        headers.pop("X-Signature")
+    elif case_name == "missing_timestamp":
+        headers.pop("X-Timestamp")
+    elif case_name == "wrong_prefix_sha512":
+        headers["X-Signature"] = signature.replace("sha256=", "sha512=", 1)
+    elif case_name == "wrong_prefix_case":
+        headers["X-Signature"] = signature.replace("sha256=", "SHA256=", 1)
+    elif case_name == "uppercase_digest":
+        headers["X-Signature"] = "sha256=" + signature.removeprefix("sha256=").upper()
+    elif case_name == "wrong_secret":
+        headers["X-Signature"] = _sign_payload(
+            "wrong-webhook-secret",
+            timestamp_text,
+            payload_bytes,
+        )
+
+    response = client.post(
+        "/webhooks/pix",
+        data=payload_bytes,
+        headers=headers,
+    )
+
+    assert response.status_code == 401
+    assert response.get_json() == {"error": "Invalid webhook signature"}
+    _assert_charge_still_pending(app, charge_id, event_id)
+
+
+def test_webhook_legacy_body_only_signature_returns_401_and_keeps_pending(client, app):
+    with app.app_context():
+        charge = _create_charge(
+            value=100.0,
+            status=ChargeStatus.PENDING,
+            external_id="ext-legacy-body-only-signature",
+        )
+        app.fake_redis.setex(f"charge:ttl:{charge.external_id}", 1800, "PENDING")
+
+    payload = {
+        "event_id": "evt_legacy_body_only_signature",
+        "external_id": "ext-legacy-body-only-signature",
+        "value": 100.0,
+        "status": "PAID",
+    }
+    payload_bytes = json.dumps(payload, separators=(",", ":"), ensure_ascii=False).encode()
+    legacy_digest = hmac.new(
+        b"test-webhook-secret",
+        payload_bytes,
+        hashlib.sha256,
+    ).hexdigest()
+
+    response = client.post(
+        "/webhooks/pix",
+        data=payload_bytes,
+        headers={
+            "Content-Type": "application/json",
+            "X-Timestamp": str(int(time.time())),
+            "X-Signature": f"sha256={legacy_digest}",
+            "X-Event-Id": "evt_legacy_body_only_signature",
+            "Idempotency-Key": "idem-legacy-body-only-signature",
+        },
+    )
+
+    assert response.status_code == 401
+    assert response.get_json() == {"error": "Invalid webhook signature"}
+
+    with app.app_context():
+        refreshed = Charge.query.get(charge.id)
+        assert refreshed.status == ChargeStatus.PENDING.value
+
+
+def test_webhook_timestamp_tampering_returns_401_and_keeps_pending(client, app):
+    with app.app_context():
+        charge = _create_charge(
+            value=100.0,
+            status=ChargeStatus.PENDING,
+            external_id="ext-timestamp-tampering",
+        )
+        app.fake_redis.setex(f"charge:ttl:{charge.external_id}", 1800, "PENDING")
+
+    payload = {
+        "event_id": "evt_timestamp_tampering",
+        "external_id": "ext-timestamp-tampering",
+        "value": 100.0,
+        "status": "PAID",
+    }
+    payload_bytes = json.dumps(payload, separators=(",", ":"), ensure_ascii=False).encode()
+    signed_timestamp = str(int(time.time()) - 10_000)
+    current_timestamp = str(int(time.time()))
+    signature = _sign_payload("test-webhook-secret", signed_timestamp, payload_bytes)
+
+    response = client.post(
+        "/webhooks/pix",
+        data=payload_bytes,
+        headers={
+            "Content-Type": "application/json",
+            "X-Timestamp": current_timestamp,
+            "X-Signature": signature,
+            "X-Event-Id": "evt_timestamp_tampering",
+            "Idempotency-Key": "idem-timestamp-tampering",
+        },
+    )
+
+    assert response.status_code == 401
+    assert response.get_json() == {"error": "Invalid webhook signature"}
+
+    with app.app_context():
+        refreshed = Charge.query.get(charge.id)
+        assert refreshed.status == ChargeStatus.PENDING.value
+
+
+@pytest.mark.parametrize(
+    "timestamp_text",
+    [
+        "1700000000.0",
+        " 1700000000",
+        "1700000000 ",
+        "+1700000000",
+        "-1700000000",
+        "1e9",
+        "not-a-number",
+        "²²²",
+    ],
+)
+def test_webhook_rejects_non_strict_timestamp_format(client, timestamp_text):
+    payload = {
+        "event_id": f"evt_invalid_timestamp_{timestamp_text}",
+        "external_id": "ext-invalid-timestamp-format",
+        "value": 100.0,
+        "status": "PENDING",
+    }
+    payload_bytes = json.dumps(payload, separators=(",", ":"), ensure_ascii=False).encode()
+    signature = _sign_payload("test-webhook-secret", timestamp_text, payload_bytes)
+
+    response = client.post(
+        "/webhooks/pix",
+        data=payload_bytes,
+        headers={
+            "Content-Type": "application/json",
+            "X-Timestamp": timestamp_text,
+            "X-Signature": signature,
+            "X-Event-Id": payload["event_id"],
+            "Idempotency-Key": f"idem-{payload['event_id']}",
+        },
+    )
+
+    assert response.status_code == 401
+    assert response.get_json() == {"error": "Invalid webhook signature"}
+
+
+def test_webhook_rejects_excessively_long_timestamp_without_500(client):
+    timestamp_text = "9" * 5000
+    payload = {
+        "event_id": "evt_excessively_long_timestamp",
+        "external_id": "ext-excessively-long-timestamp",
+        "value": 100.0,
+        "status": "PENDING",
+    }
+    payload_bytes = json.dumps(payload, separators=(",", ":"), ensure_ascii=False).encode()
+    signature = _sign_payload("test-webhook-secret", timestamp_text, payload_bytes)
+
+    response = client.post(
+        "/webhooks/pix",
+        data=payload_bytes,
+        headers={
+            "Content-Type": "application/json",
+            "X-Timestamp": timestamp_text,
+            "X-Signature": signature,
+            "X-Event-Id": payload["event_id"],
+            "Idempotency-Key": "idem-excessively-long-timestamp",
+        },
+    )
+
+    assert response.status_code == 401
+    assert response.get_json() == {"error": "Invalid webhook signature"}
+
+
+def test_webhook_empty_body_with_valid_signature_reaches_json_validation(client):
+    raw_body = b""
+    timestamp_text = str(int(time.time()))
+    signature = _sign_payload("test-webhook-secret", timestamp_text, raw_body)
+
+    response = client.post(
+        "/webhooks/pix",
+        data=raw_body,
+        headers={
+            "Content-Type": "application/json",
+            "X-Timestamp": timestamp_text,
+            "X-Signature": signature,
+            "X-Event-Id": "evt_empty_body",
+            "Idempotency-Key": "idem-empty-body",
+        },
+    )
+
+    assert response.status_code == 400
+    assert response.get_json() == {"error": "Invalid JSON payload"}
+
+
+def test_webhook_body_tampering_returns_401(client):
+    original_payload = {
+        "event_id": "evt_body_tampering",
+        "external_id": "ext-body-tampering",
+        "value": 100.0,
+        "status": "PAID",
+    }
+    tampered_payload = {**original_payload, "value": 101.0}
+    original_bytes = json.dumps(
+        original_payload,
+        separators=(",", ":"),
+        ensure_ascii=False,
+    ).encode()
+    tampered_bytes = json.dumps(
+        tampered_payload,
+        separators=(",", ":"),
+        ensure_ascii=False,
+    ).encode()
+    timestamp_text = str(int(time.time()))
+    signature = _sign_payload("test-webhook-secret", timestamp_text, original_bytes)
+
+    response = client.post(
+        "/webhooks/pix",
+        data=tampered_bytes,
+        headers={
+            "Content-Type": "application/json",
+            "X-Timestamp": timestamp_text,
+            "X-Signature": signature,
+            "X-Event-Id": "evt_body_tampering",
+            "Idempotency-Key": "idem-body-tampering",
+        },
+    )
+
+    assert response.status_code == 401
+    assert response.get_json() == {"error": "Invalid webhook signature"}
+
+
+def test_webhook_same_json_semantics_different_body_bytes_returns_401(client):
+    signed_body = (
+        b'{"event_id":"evt-byte-order","external_id":"ext-byte-order",'
+        b'"value":100.0,"status":"PAID"}'
+    )
+    sent_body = (
+        b'{"status":"PAID","value":100.0,"external_id":"ext-byte-order",'
+        b'"event_id":"evt-byte-order"}'
+    )
+    timestamp_text = str(int(time.time()))
+    signature = _sign_payload("test-webhook-secret", timestamp_text, signed_body)
+
+    response = client.post(
+        "/webhooks/pix",
+        data=sent_body,
+        headers={
+            "Content-Type": "application/json",
+            "X-Timestamp": timestamp_text,
+            "X-Signature": signature,
+            "X-Event-Id": "evt-byte-order",
+            "Idempotency-Key": "idem-byte-order",
+        },
+    )
+
+    assert response.status_code == 401
+    assert response.get_json() == {"error": "Invalid webhook signature"}
+
+
 def test_webhook_same_idempotency_key_with_different_payload_returns_409(client, app):
     external_id = "ext-idempotency-fingerprint-conflict"
     first_event_id = "evt_idempotency_fingerprint_first"
@@ -449,23 +798,60 @@ def test_webhook_timestamp_outside_window_returns_401_or_400_and_keeps_pending(c
         "status": "PAID",
     }
     payload_bytes = json.dumps(payload, separators=(",", ":"), ensure_ascii=False).encode()
-    signature = _sign_payload("test-webhook-secret", payload_bytes)
+    timestamp_text = str(int(time.time()) - 10_000)
+    signature = _sign_payload("test-webhook-secret", timestamp_text, payload_bytes)
     response = client.post(
         "/webhooks/pix",
         data=payload_bytes,
         headers={
             "Content-Type": "application/json",
-            "X-Timestamp": str(int(time.time()) - 10_000),
+            "X-Timestamp": timestamp_text,
             "X-Signature": signature,
             "X-Event-Id": "evt_test_old_timestamp",
             "Idempotency-Key": "evt_test_old_timestamp",
         },
     )
-    if response.status_code not in (401, 400):
-        pytest.xfail(
-            "Timestamp validation appears missing in security/webhook_signature.py "
-            "(expected rejection for old timestamp)."
+    assert response.status_code == 401
+    assert response.get_json() == {"error": "Invalid webhook signature"}
+    with app.app_context():
+        refreshed = Charge.query.get(charge.id)
+        assert refreshed.status == ChargeStatus.PENDING.value
+
+
+def test_webhook_future_timestamp_outside_window_returns_401(client, app):
+    with app.app_context():
+        charge = _create_charge(
+            value=150.0,
+            status=ChargeStatus.PENDING,
+            external_id="ext-future-timestamp",
         )
+        app.fake_redis.setex(f"charge:ttl:{charge.external_id}", 1800, "PENDING")
+
+    payload = {
+        "event_id": "evt_test_future_timestamp",
+        "external_id": "ext-future-timestamp",
+        "value": 150.0,
+        "status": "PAID",
+    }
+    payload_bytes = json.dumps(payload, separators=(",", ":"), ensure_ascii=False).encode()
+    timestamp_text = str(int(time.time()) + 10_000)
+    signature = _sign_payload("test-webhook-secret", timestamp_text, payload_bytes)
+
+    response = client.post(
+        "/webhooks/pix",
+        data=payload_bytes,
+        headers={
+            "Content-Type": "application/json",
+            "X-Timestamp": timestamp_text,
+            "X-Signature": signature,
+            "X-Event-Id": "evt_test_future_timestamp",
+            "Idempotency-Key": "evt_test_future_timestamp",
+        },
+    )
+
+    assert response.status_code == 401
+    assert response.get_json() == {"error": "Invalid webhook signature"}
+
     with app.app_context():
         refreshed = Charge.query.get(charge.id)
         assert refreshed.status == ChargeStatus.PENDING.value
@@ -487,13 +873,14 @@ def test_webhook_value_mismatch_returns_400_and_keeps_pending(client, app):
         "status": "PAID",
     }
     payload_bytes = json.dumps(payload, separators=(",", ":"), ensure_ascii=False).encode()
-    signature = _sign_payload("test-webhook-secret", payload_bytes)
+    timestamp_text = str(int(time.time()))
+    signature = _sign_payload("test-webhook-secret", timestamp_text, payload_bytes)
     response = client.post(
         "/webhooks/pix",
         data=payload_bytes,
         headers={
             "Content-Type": "application/json",
-            "X-Timestamp": str(int(time.time())),
+            "X-Timestamp": timestamp_text,
             "X-Signature": signature,
             "X-Event-Id": "evt_test_value_mismatch",
             "Idempotency-Key": "evt_test_value_mismatch",
@@ -524,14 +911,15 @@ def test_webhook_duplicate_event_id_is_ignored_without_changing_paid_at(client, 
         "status": "PAID",
     }
     payload_bytes = json.dumps(payload, separators=(",", ":"), ensure_ascii=False).encode()
-    signature = _sign_payload("test-webhook-secret", payload_bytes)
+    timestamp_text = str(int(time.time()))
+    signature = _sign_payload("test-webhook-secret", timestamp_text, payload_bytes)
 
     first_response = client.post(
         "/webhooks/pix",
         data=payload_bytes,
         headers={
             "Content-Type": "application/json",
-            "X-Timestamp": str(int(time.time())),
+            "X-Timestamp": timestamp_text,
             "X-Signature": signature,
             "X-Event-Id": "evt_same_event_twice",
             "Idempotency-Key": "idem-first",
@@ -548,7 +936,7 @@ def test_webhook_duplicate_event_id_is_ignored_without_changing_paid_at(client, 
         data=payload_bytes,
         headers={
             "Content-Type": "application/json",
-            "X-Timestamp": str(int(time.time())),
+            "X-Timestamp": timestamp_text,
             "X-Signature": signature,
             "X-Event-Id": "evt_same_event_twice",
             "Idempotency-Key": "idem-second",

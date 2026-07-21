@@ -18,8 +18,9 @@ CHARGES_BASE = "/payment/charges"
 
 
 
-def _sign_payload(secret, payload_bytes):
-    digest = hmac.new(secret.encode(), payload_bytes, hashlib.sha256).hexdigest()
+def _sign_payload(secret, timestamp_text, payload_bytes):
+    signed_message = timestamp_text.encode("utf-8") + b"." + payload_bytes
+    digest = hmac.new(secret.encode(), signed_message, hashlib.sha256).hexdigest()
     return f"sha256={digest}"
 
 
@@ -101,13 +102,14 @@ def bank_client(payment_client):
         }
         payload_bytes = json.dumps(payload, separators=(",", ":"), ensure_ascii=False).encode()
 
+        timestamp_text = str(int(time.time()))
         webhook_response = payment_client.post(
             "/webhooks/pix",
             data=payload_bytes,
             headers={
                 "Content-Type": "application/json",
-                "X-Timestamp": str(int(time.time())),
-                "X-Signature": _sign_payload(webhook_secret, payload_bytes),
+                "X-Timestamp": timestamp_text,
+                "X-Signature": _sign_payload(webhook_secret, timestamp_text, payload_bytes),
                 "X-Event-Id": event_id,
                 "Idempotency-Key": event_id,
             },
