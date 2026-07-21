@@ -21,7 +21,7 @@ Este serviço **não confirma pagamentos por chamada direta** — a confirmaçã
 * Webhooks assinados (**HMAC SHA-256**)
 * Proteção contra replay attack (**timestamp + tolerance window**)
 * **Idempotência HTTP** por `Idempotency-Key` com fingerprint da requisição (Redis)
-* **Deduplicação de evento** por `event_id` (Redis)
+* **Deduplicação atômica de evento** por `event_id` com lock Redis (`SET NX EX`)
 * **Redis como fonte de verdade** para expiração
 * Rate limiting em endpoints sensíveis
 * Observabilidade com **X-Request-Id**
@@ -66,6 +66,7 @@ payment-charges-api/
 ├── security/                 # Segurança (camada transversal)
 │   ├── auth.py               # API key (quando aplicável)
 │   ├── idempotency.py        # Idempotência via Redis (Idempotency-Key + fingerprint)
+│   ├── webhook_event_deduplication.py # Lock/dedupe atômica por event_id
 │   └── webhook_signature.py  # HMAC + timestamp validation
 │
 ├── infrastructure/           # Integrações externas (Redis etc.)
@@ -290,7 +291,22 @@ Status HTTP: `409 Conflict`.
 
 Essa proteção é diferente da deduplicação por `event_id`: `Idempotency-Key` protege o replay HTTP de curto prazo; `event_id` identifica o evento de webhook no domínio e evita processamento duplicado.
 
-Respostas HTTP 5xx não são armazenadas no cache idempotente. Um retry com a mesma `Idempotency-Key` e o mesmo fingerprint pode reexecutar a operação, permitindo recuperação após falhas transitórias; respostas 2xx e 4xx continuam replayáveis. Possíveis efeitos parciais seguem protegidos por transação, state machine e deduplicação por `event_id`.
+A deduplicação por `event_id` usa duas chaves Redis:
+
+- `webhook:event:{event_id}:lock`: lock transitório adquirido com `SET NX EX` por 60 segundos;
+- `webhook:event:{event_id}`: marcador definitivo `processed`, gravado por 24 horas somente após a confirmação persistida com sucesso.
+
+Se outro request com o mesmo `event_id` chegar enquanto o primeiro ainda está em processamento, a API retorna uma resposta transitória não armazenada no cache idempotente:
+
+```json
+{
+  "error": "Event processing in progress"
+}
+```
+
+Status HTTP: `503 Service Unavailable`. O emissor pode tentar novamente. Se o marcador definitivo já existir, a API preserva o comportamento idempotente atual e retorna `200` com `{"message": "Duplicate event ignored"}`.
+
+Falhas de payload, valor monetário inválido, mismatch de valor, charge inexistente ou erro antes do commit não gravam o marcador definitivo e liberam o lock se o request ainda for owner. Respostas HTTP 5xx não são armazenadas no cache idempotente. Um retry com a mesma `Idempotency-Key` e o mesmo fingerprint pode reexecutar a operação, permitindo recuperação após falhas transitórias; respostas 2xx e 4xx continuam replayáveis. Possíveis efeitos parciais seguem protegidos por transação, state machine e deduplicação por `event_id`.
 
 ---
 
@@ -300,6 +316,7 @@ Respostas HTTP 5xx não são armazenadas no cache idempotente. Um retry com a me
 * Validação de timestamp (tolerance window)
 * Proteção contra retries HTTP com `Idempotency-Key` + fingerprint
 * Lock Redis por `Idempotency-Key` para impedir execução concorrente duplicada
+* Lock Redis por `event_id` para impedir execução concorrente duplicada do mesmo evento
 * Proteção contra eventos duplicados por `event_id`
 * Webhooks inválidos são rejeitados com status **401 / 400**
 * Reutilização de `Idempotency-Key` com requisição diferente é rejeitada com status **409**

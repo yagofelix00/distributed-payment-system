@@ -89,6 +89,7 @@ paths:
         - Idempotency-Key concurrent execution lock via Redis
         - Idempotency-Key request fingerprint conflict detection
         - Event deduplication (event_id) via Redis
+        - Event concurrent execution lock via Redis (`webhook:event:{event_id}:lock`)
         - Charge TTL via Redis
       parameters:
         - in: header
@@ -183,6 +184,23 @@ paths:
                   summary: Equivalent idempotent request is still being processed
                   value:
                     error: "Idempotency request already in progress"
+        "503":
+          description: >
+            Transient webhook processing condition or dependency unavailable. Clients may retry.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              examples:
+                eventProcessing:
+                  summary: Same event_id is already being processed
+                  value:
+                    error: "Event processing in progress"
+                serviceUnavailable:
+                  summary: Redis/dependency unavailable
+                  value:
+                    error: "Service unavailable"
+
 
 components:
   schemas:

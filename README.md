@@ -64,12 +64,17 @@ Para evitar processamento duplicado de eventos de webhook, o sistema implementa 
 Funcionamento:
 
 - Cada webhook recebido exige `event_id` no payload.
-- Antes de processar a cobrança, o sistema verifica no Redis a chave:
+- Antes de processar a cobrança, o sistema verifica o marcador definitivo no Redis:
   `webhook:event:{event_id}`.
-- Se já existir, o evento é ignorado (HTTP 200 – idempotent safe response).
-- Se não existir, o evento é processado normalmente.
-- A chave é persistida no Redis com TTL de 24 horas
-  apenas após a transição de estado bem-sucedida.
+- Se o marcador definitivo já existir, o evento é ignorado (HTTP 200 – idempotent safe response).
+- Se não existir, a API adquire um lock transitório com `SET NX EX`:
+  `webhook:event:{event_id}:lock`.
+- Enquanto o lock estiver ocupado por outro request, a API retorna HTTP 503 com
+  `{"error": "Event processing in progress"}`, permitindo retry do provedor.
+- A chave definitiva `webhook:event:{event_id}` é persistida como `processed`
+  no Redis com TTL de 24 horas apenas após a transição de estado bem-sucedida.
+- Falhas de validação, mismatch de valor ou erro antes do commit não gravam o
+  marcador definitivo; o lock é liberado somente pelo request owner.
 
 Isso protege contra:
 - Retries do provedor
