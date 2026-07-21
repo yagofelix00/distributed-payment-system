@@ -73,8 +73,8 @@ def app(monkeypatch, fake_redis):
     monkeypatch.setattr("routes.charges.redis_client", fake_redis)
     monkeypatch.setattr("services.charge_service.redis_client", fake_redis)
     monkeypatch.setattr("services.pix_webhook_service.redis_client", fake_redis)
-    monkeypatch.setattr("routes.webhooks.redis_client", fake_redis)
     monkeypatch.setattr("security.idempotency.redis_client", fake_redis)
+    monkeypatch.setattr("security.webhook_event_deduplication.redis_client", fake_redis)
 
     app.fake_redis = fake_redis
 
@@ -601,6 +601,7 @@ def test_webhook_ttl_redis_failure_returns_503_and_keeps_charge_pending(
     assert response.status_code == 503
     assert response.get_json() == {"error": "Service unavailable"}
     assert app.fake_redis.exists(f"webhook:event:{event_id}") == 0
+    assert app.fake_redis.exists(f"webhook:event:{event_id}:lock") == 0
 
     with app.app_context():
         refreshed = db.session.get(Charge, charge_id)
@@ -647,6 +648,7 @@ def test_webhook_retry_after_transient_503_reexecutes_and_caches_success(
     assert first_response.get_json() == {"error": "Service unavailable"}
     assert idempotency_cache_key not in app.fake_redis.store
     assert app.fake_redis.exists(f"webhook:event:{event_id}") == 0
+    assert app.fake_redis.exists(f"webhook:event:{event_id}:lock") == 0
 
     monkeypatch.setattr("services.pix_webhook_service.redis_client", app.fake_redis)
 
@@ -778,6 +780,150 @@ def test_concurrent_same_idempotency_key_allows_single_webhook_execution(
         assert refreshed.paid_at == paid_at
 
 
+def test_concurrent_same_event_id_with_different_idempotency_keys_uses_event_lock(
+    app,
+    monkeypatch,
+):
+    import routes.webhooks as webhooks_module
+
+    external_id = "ext-concurrent-event-dedupe"
+    event_id = "evt-concurrent-event-dedupe"
+    first_idempotency_key = "idem-concurrent-event-first"
+    second_idempotency_key = "idem-concurrent-event-second"
+    second_cache_key = f"idempotency:{second_idempotency_key}"
+    entered_transition = threading.Event()
+    release_transition = threading.Event()
+    transition_calls = {"count": 0}
+    original_transition = webhooks_module.transition_charge
+
+    with app.app_context():
+        charge = _create_charge(value=100.0, external_id=external_id)
+        charge_id = charge.id
+        app.fake_redis.setex(f"charge:ttl:{external_id}", 1800, "PENDING")
+
+    def blocking_transition(charge, new_state):
+        transition_calls["count"] += 1
+        entered_transition.set()
+        assert release_transition.wait(timeout=2)
+        return original_transition(charge, new_state)
+
+    monkeypatch.setattr(webhooks_module, "transition_charge", blocking_transition)
+
+    payload = {
+        "event_id": event_id,
+        "external_id": external_id,
+        "value": 100.0,
+        "status": "PAID",
+    }
+    first_result = {}
+
+    def first_request():
+        first_result["response"] = _post_signed_webhook(
+            app.test_client(),
+            payload,
+            first_idempotency_key,
+        )
+
+    thread = threading.Thread(target=first_request)
+    thread.start()
+    assert entered_transition.wait(timeout=2)
+    assert transition_calls["count"] == 1
+
+    in_progress_response = _post_signed_webhook(
+        app.test_client(),
+        payload,
+        second_idempotency_key,
+    )
+
+    assert in_progress_response.status_code == 503
+    assert in_progress_response.get_json() == {
+        "error": "Event processing in progress"
+    }
+    assert second_cache_key not in app.fake_redis.store
+    assert app.fake_redis.exists(f"webhook:event:{event_id}:lock") == 1
+
+    release_transition.set()
+    thread.join(timeout=2)
+    assert not thread.is_alive()
+
+    first_response = first_result["response"]
+    assert first_response.status_code == 200
+    assert first_response.get_json() == {"message": "Payment confirmed"}
+    assert app.fake_redis.get(f"webhook:event:{event_id}") == "processed"
+    assert app.fake_redis.exists(f"webhook:event:{event_id}:lock") == 0
+
+    with app.app_context():
+        refreshed = db.session.get(Charge, charge_id)
+        assert refreshed.status == ChargeStatus.PAID.value
+        paid_at = refreshed.paid_at
+        assert paid_at is not None
+
+    retry_response = _post_signed_webhook(
+        app.test_client(),
+        payload,
+        second_idempotency_key,
+    )
+
+    assert retry_response.status_code == 200
+    assert retry_response.get_json() == {"message": "Duplicate event ignored"}
+    assert transition_calls["count"] == 1
+
+    with app.app_context():
+        refreshed = db.session.get(Charge, charge_id)
+        assert refreshed.status == ChargeStatus.PAID.value
+        assert refreshed.paid_at == paid_at
+
+
+def test_webhook_commit_failure_releases_event_lock_and_allows_retry(
+    client,
+    app,
+    monkeypatch,
+):
+    import routes.webhooks as webhooks_module
+
+    external_id = "ext-transition-failure-retry"
+    event_id = "evt-transition-failure-retry"
+    payload = {
+        "event_id": event_id,
+        "external_id": external_id,
+        "value": 100.0,
+        "status": "PAID",
+    }
+
+    with app.app_context():
+        charge = _create_charge(value=100.0, external_id=external_id)
+        charge_id = charge.id
+        app.fake_redis.setex(f"charge:ttl:{external_id}", 1800, "PENDING")
+
+    original_transition = webhooks_module.transition_charge
+
+    def failing_transition(charge, new_state):
+        raise RuntimeError("database commit failed")
+
+    monkeypatch.setattr(webhooks_module, "transition_charge", failing_transition)
+
+    first_response = _post_signed_webhook(client, payload, "idem-transition-failure-first")
+
+    assert first_response.status_code == 500
+    assert first_response.get_json() == {"error": "Internal server error"}
+    assert app.fake_redis.exists(f"webhook:event:{event_id}") == 0
+    assert app.fake_redis.exists(f"webhook:event:{event_id}:lock") == 0
+
+    monkeypatch.setattr(webhooks_module, "transition_charge", original_transition)
+
+    retry_response = _post_signed_webhook(client, payload, "idem-transition-failure-second")
+
+    assert retry_response.status_code == 200
+    assert retry_response.get_json() == {"message": "Payment confirmed"}
+    assert app.fake_redis.get(f"webhook:event:{event_id}") == "processed"
+    assert app.fake_redis.exists(f"webhook:event:{event_id}:lock") == 0
+
+    with app.app_context():
+        refreshed = db.session.get(Charge, charge_id)
+        assert refreshed.status == ChargeStatus.PAID.value
+        assert refreshed.paid_at is not None
+
+
 def test_webhook_decimal_cent_value_confirms_matching_charge(client, app):
     with app.app_context():
         charge = _create_charge(
@@ -872,6 +1018,9 @@ def test_webhook_rejects_more_than_two_decimal_places_and_keeps_pending(client, 
         assert app.fake_redis.exists(
             "webhook:event:evt_invalid_decimal_scale"
         ) == 0
+        assert app.fake_redis.exists(
+            "webhook:event:evt_invalid_decimal_scale:lock"
+        ) == 0
 
 
 def test_webhook_cent_mismatch_keeps_charge_pending(client, app):
@@ -903,3 +1052,4 @@ def test_webhook_cent_mismatch_keeps_charge_pending(client, app):
         assert refreshed.status == ChargeStatus.PENDING.value
         assert refreshed.paid_at is None
         assert app.fake_redis.exists("webhook:event:evt_cent_mismatch") == 0
+        assert app.fake_redis.exists("webhook:event:evt_cent_mismatch:lock") == 0
