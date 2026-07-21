@@ -1,21 +1,25 @@
 import json
+import time
 import requests
 from security.hmac import sign_payload
 
+
 def send_webhook(url, payload):
     body = json.dumps(payload)
+    body_bytes = body.encode("utf-8")
+    timestamp = str(int(time.time()))
 
     headers = {
         "Content-Type": "application/json",
-        "X-Signature": sign_payload(body),
+        "X-Signature": sign_payload(timestamp, body_bytes),
         "X-Event-Id": payload["event_id"],
-        "X-Timestamp": str(payload["timestamp"])
+        "X-Timestamp": timestamp,
     }
 
     try:
         response = requests.post(
             url,
-            data=body,
+            data=body_bytes,
             headers=headers,
             timeout=5
         )

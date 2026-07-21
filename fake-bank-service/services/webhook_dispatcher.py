@@ -57,34 +57,36 @@ def send_webhook(
     if not event_id:
         raise ValueError("payload['event_id'] is required for idempotency")
 
-    # IMPORTANT: Use a stable JSON serialization (no pretty printing)
+    # IMPORTANT: Use a stable JSON serialization (no pretty printing).
+    # The exact bytes signed here must be the exact bytes sent in the request.
     body = json.dumps(payload, separators=(",", ":"), ensure_ascii=False)
-    timestamp = str(int(time.time()))
-
-    # Signature must match what your webhook validator expects
-    signature = sign_payload(body)  # returns "sha256=<hex>"
+    body_bytes = body.encode("utf-8")
 
     request_id = get_request_id()
 
-    headers = {
-        "Content-Type": "application/json",
-        "X-Signature": signature,
-        "X-Timestamp": timestamp,
-        "X-Event-Id": event_id,
-        "X-Request-Id": request_id,
-    }
-
     delay = float(initial_delay_seconds)
+    last_headers = None
 
     last_status_code = None
     last_error = None
     last_response_body = None
 
     for attempt in range(1, max_retries + 1):
+        timestamp = str(int(time.time()))
+        signature = sign_payload(timestamp, body_bytes)  # returns "sha256=<hex>"
+        headers = {
+            "Content-Type": "application/json",
+            "X-Signature": signature,
+            "X-Timestamp": timestamp,
+            "X-Event-Id": event_id,
+            "X-Request-Id": request_id,
+        }
+        last_headers = headers
+
         try:
             resp = requests.post(
                 url,
-                data=body,
+                data=body_bytes,
                 headers=headers,
                 timeout=timeout_seconds,
             )
@@ -132,7 +134,11 @@ def send_webhook(
         delay = min(delay * backoff_multiplier, max_delay_seconds)
 
     # DLQ: não persistir assinatura
-    safe_headers = {k: v for k, v in headers.items() if k.lower() != "x-signature"}
+    safe_headers = {
+        k: v
+        for k, v in (last_headers or {}).items()
+        if k.lower() != "x-signature"
+    }
 
     enqueue_failed_webhook(
         url=url,
