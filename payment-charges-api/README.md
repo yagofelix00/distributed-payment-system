@@ -122,18 +122,34 @@ Este serviço segue uma separação clara de responsabilidades:
 
 ## 📦 Variáveis de Ambiente
 
-Arquivo `.env`:
+Use o template versionado como base para a configuração local.
 
-```env
-FLASK_ENV=development
-SECRET_KEY=your-secret-key
+PowerShell:
 
-# Webhook
-WEBHOOK_SECRET=super-secret-webhook-key
-
-# Redis
-REDIS_URL=redis://redis:6379/0
+```powershell
+Copy-Item .env.example .env
 ```
+
+Bash:
+
+```bash
+cp .env.example .env
+```
+
+> Execute os comandos acima dentro de `payment-charges-api/`.
+
+Preencha os placeholders antes de iniciar o serviço:
+
+* `WEBHOOK_SECRET`: obrigatório; deve ser exatamente o mesmo valor usado pelo `fake-bank-service`.
+* `EXTERNAL_API_KEY`: token local esperado pelos endpoints protegidos.
+* `REDIS_URL`: URL do Redis usado para TTL de cobranças, idempotência, deduplicação de eventos e rate limiting.
+
+Valores comuns de `REDIS_URL`:
+
+* Host local: `redis://localhost:6379/0`
+* Dentro do Docker Compose: `redis://redis:6379/0`
+
+Nunca versione arquivos `.env` com segredos reais.
 
 ---
 

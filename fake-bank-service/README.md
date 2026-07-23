@@ -91,13 +91,31 @@ provedor de pagamento real:
 
 ## 📦 Variáveis de Ambiente
 
-Arquivo `.env` ou `config.py`:
+Use o template versionado como referência para as variáveis esperadas pelo serviço.
 
-```env
-WEBHOOK_SECRET=super-secret-webhook-key
+PowerShell:
+
+```powershell
+Copy-Item .env.example .env
 ```
 
-> A `WEBHOOK_SECRET` deve ser a mesma configurada no `payment-charges-api`.
+Bash:
+
+```bash
+cp .env.example .env
+```
+
+> Execute os comandos acima dentro de `fake-bank-service/`.
+
+Preencha `WEBHOOK_SECRET` com exatamente o mesmo valor configurado no `payment-charges-api`; esse segredo compartilhado é usado para assinar e validar webhooks PIX.
+
+As variáveis de retry/backoff (`MAX_RETRIES`, `INITIAL_DELAY_SECONDS`, `BACKOFF_MULTIPLIER`, `MAX_DELAY_SECONDS`) e `TIMEOUT_SECONDS` são opcionais e possuem defaults no código.
+
+`WEBHOOK_URL` existe na configuração do serviço, mas o fluxo principal de PIX atualmente exige `webhook_url` no payload da cobrança e usa esse valor para despachar o webhook. O template mantém `WEBHOOK_URL` apenas como variável já existente na configuração; esta task não altera o comportamento atual.
+
+Importante: o Fake Bank não chama `load_dotenv()` explicitamente hoje. Ao rodar sem Docker Compose, exporte as variáveis no shell ou use uma ferramenta que carregue `.env` antes de iniciar o serviço.
+
+Nunca versione arquivos `.env` com segredos reais.
 
 ---
 
