@@ -1,93 +1,93 @@
-# 💳 Payment Platform — PIX Webhooks
+# Ã°Å¸â€™Â³ Payment Platform Ã¢â‚¬â€ PIX Webhooks
 
-Plataforma de pagamentos desenvolvida para **simular um fluxo real de cobranças e confirmações via PIX**, utilizando **webhooks assinados**, **SQLite para persistência local e Redis como fonte de verdade para expiração**, **idempotência**, **rate limit**, **observabilidade cross-service** e um **Fake Bank Service** para integração completa.
+Plataforma de pagamentos desenvolvida para **simular um fluxo real de cobranÃƒÂ§as e confirmaÃƒÂ§ÃƒÂµes via PIX**, utilizando **webhooks assinados**, **SQLite para persistÃƒÂªncia local e Redis como fonte de verdade para expiraÃƒÂ§ÃƒÂ£o**, **idempotÃƒÂªncia**, **rate limit**, **observabilidade cross-service** e um **Fake Bank Service** para integraÃƒÂ§ÃƒÂ£o completa.
 
-O projeto tem foco **educacional e de portfólio**, demonstrando **como sistemas de pagamento funcionam em produção**, indo além de CRUDs simples.
+O projeto tem foco **educacional e de portfÃƒÂ³lio**, demonstrando **como sistemas de pagamento funcionam em produÃƒÂ§ÃƒÂ£o**, indo alÃƒÂ©m de CRUDs simples.
 
 ---
 
-## 🚀 Visão Geral
+## Ã°Å¸Å¡â‚¬ VisÃƒÂ£o Geral
 
 * Tipo: **API REST**
-* Domínio: **Pagamentos / PIX / Webhooks**
-* Modelo: **Confirmação assíncrona via webhook**
-* Cenário real: e-commerce, SaaS, marketplaces, PSPs
-* Integração: **Payment API ↔ Fake Bank Service**
+* DomÃƒÂ­nio: **Pagamentos / PIX / Webhooks**
+* Modelo: **ConfirmaÃƒÂ§ÃƒÂ£o assÃƒÂ­ncrona via webhook**
+* CenÃƒÂ¡rio real: e-commerce, SaaS, marketplaces, PSPs
+* IntegraÃƒÂ§ÃƒÂ£o: **Payment API Ã¢â€ â€ Fake Bank Service**
 
 Responsabilidades:
 
-* `payment-charges-api`: cria e consulta cobranças, recebe webhooks PIX assinados, valida HMAC/timestamp, aplica idempotência, controla expiração via Redis TTL e persiste estado localmente em SQLite.
-* `fake-bank-service`: registra cobranças simuladas em memória, processa o pagamento PIX fake, assina webhooks, faz retry com backoff exponencial e envia falhas definitivas para DLQ em arquivo.
+* `payment-charges-api`: cria e consulta cobranÃƒÂ§as, recebe webhooks PIX assinados, valida HMAC/timestamp, aplica idempotÃƒÂªncia, controla expiraÃƒÂ§ÃƒÂ£o via Redis TTL e persiste estado localmente em SQLite.
+* `fake-bank-service`: registra cobranÃƒÂ§as simuladas em memÃƒÂ³ria, processa o pagamento PIX fake, assina webhooks, faz retry com backoff exponencial e envia falhas definitivas para DLQ em arquivo.
 
 ---
 
-## 🏗️ Arquitetura (Visão de Produto)
+## Ã°Å¸Ââ€”Ã¯Â¸Â Arquitetura (VisÃƒÂ£o de Produto)
 
 ```text
-┌──────────────┐        Webhook (HMAC)
-│ Fake Bank    │ ─────────────────────▶ │ Payment Charges API │
-│ Service      │                         │                     │
-└──────────────┘                         └─────────────────────┘
-        ▲                                             │
-        │                                             │
-        └─────────── PIX Payment Flow ────────────────┘
+Ã¢â€Å’Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€Â        Webhook (HMAC)
+Ã¢â€â€š Fake Bank    Ã¢â€â€š Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€“Â¶ Ã¢â€â€š Payment Charges API Ã¢â€â€š
+Ã¢â€â€š Service      Ã¢â€â€š                         Ã¢â€â€š                     Ã¢â€â€š
+Ã¢â€â€Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€Ëœ                         Ã¢â€â€Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€Ëœ
+        Ã¢â€“Â²                                             Ã¢â€â€š
+        Ã¢â€â€š                                             Ã¢â€â€š
+        Ã¢â€â€Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬ PIX Payment Flow Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€Ëœ
 ```
 
 ### Fluxo completo
 
-1. Cliente cria uma cobrança (`POST /payment/charges`)
-2. Cobrança é registrada no Fake Bank (`POST /bank/pix/charges`)
+1. Cliente cria uma cobranÃƒÂ§a (`POST /payment/charges`)
+2. CobranÃƒÂ§a ÃƒÂ© registrada no Fake Bank (`POST /bank/pix/charges`)
 3. Fake Bank processa o pagamento PIX (`POST /bank/pix/pay`)
 4. Fake Bank envia **webhook assinado**
-5. API valida assinatura + timestamp + idempotência
-6. Cobrança é marcada como **PAID**
+5. API valida assinatura + timestamp + idempotÃƒÂªncia
+6. CobranÃƒÂ§a ÃƒÂ© marcada como **PAID**
 
 ---
 
-## 🧠 Conceitos de Produção Implementados
+## Ã°Å¸Â§Â  Conceitos de ProduÃƒÂ§ÃƒÂ£o Implementados
 
 * Webhooks assinados (**HMAC SHA-256**)
-* Proteção contra replay attacks (**timestamp + tolerance window**)
-* Idempotência de eventos via Redis
-* SQLite para persistência local e Redis como fonte de verdade para expiração (TTL)
-* Rate limit em endpoints sensíveis
+* ProteÃƒÂ§ÃƒÂ£o contra replay attacks (**timestamp + tolerance window**)
+* IdempotÃƒÂªncia de eventos via Redis
+* SQLite para persistÃƒÂªncia local e Redis como fonte de verdade para expiraÃƒÂ§ÃƒÂ£o (TTL)
+* Rate limit em endpoints sensÃƒÂ­veis
 * Observabilidade cross-service (`X-Request-Id`)
-* Logs da Payment API com `request_id`; Fake Bank mantém logs simples com `print`
+* Logs da Payment API com `request_id`; Fake Bank mantÃƒÂ©m logs simples com `print`
 * Retry + exponential backoff no Fake Bank
 * DLQ em arquivo para falhas permanentes de webhook
-* Separação clara por camadas e responsabilidades
+* SeparaÃƒÂ§ÃƒÂ£o clara por camadas e responsabilidades
 
-## 🔁 Event Deduplication
+## Ã°Å¸â€Â Event Deduplication
 
-Para evitar processamento duplicado de eventos de webhook, o sistema implementa deduplicação server-side baseada em `event_id`.
+Para evitar processamento duplicado de eventos de webhook, o sistema implementa deduplicaÃƒÂ§ÃƒÂ£o server-side baseada em `event_id`.
 
 Funcionamento:
 
 - Cada webhook recebido exige `event_id` no payload.
-- Antes de processar a cobrança, o sistema verifica o marcador definitivo no Redis:
+- Antes de processar a cobranÃƒÂ§a, o sistema verifica o marcador definitivo no Redis:
   `webhook:event:{event_id}`.
-- Se o marcador definitivo já existir, o evento é ignorado (HTTP 200 – idempotent safe response).
-- Se não existir, a API adquire um lock transitório com `SET NX EX`:
+- Se o marcador definitivo jÃƒÂ¡ existir, o evento ÃƒÂ© ignorado (HTTP 200 Ã¢â‚¬â€œ idempotent safe response).
+- Se nÃƒÂ£o existir, a API adquire um lock transitÃƒÂ³rio com `SET NX EX`:
   `webhook:event:{event_id}:lock`.
 - Enquanto o lock estiver ocupado por outro request, a API retorna HTTP 503 com
   `{"error": "Event processing in progress"}`, permitindo retry do provedor.
-- A chave definitiva `webhook:event:{event_id}` é persistida como `processed`
-  no Redis com TTL de 24 horas apenas após a transição de estado bem-sucedida.
-- Falhas de validação, mismatch de valor ou erro antes do commit não gravam o
-  marcador definitivo; o lock é liberado somente pelo request owner.
+- A chave definitiva `webhook:event:{event_id}` ÃƒÂ© persistida como `processed`
+  no Redis com TTL de 24 horas apenas apÃƒÂ³s a transiÃƒÂ§ÃƒÂ£o de estado bem-sucedida.
+- Falhas de validaÃƒÂ§ÃƒÂ£o, mismatch de valor ou erro antes do commit nÃƒÂ£o gravam o
+  marcador definitivo; o lock ÃƒÂ© liberado somente pelo request owner.
 
 Isso protege contra:
 - Retries do provedor
 - Reenvio manual de webhooks
-- Ataques de replay fora da janela de idempotência
+- Ataques de replay fora da janela de idempotÃƒÂªncia
 
 > Modelo inspirado em provedores como **Stripe, Mercado Pago e OpenPix**.
 
-## 🔁 Health & Readiness
+## Ã°Å¸â€Â Health & Readiness
 
-A API expõe dois endpoints voltados para ambientes de produção, adequados para ambientes conteinerizados (Docker, Kubernetes, etc.):
+A API expÃƒÂµe dois endpoints voltados para ambientes de produÃƒÂ§ÃƒÂ£o, adequados para ambientes conteinerizados (Docker, Kubernetes, etc.):
 ### `/health`
-Verifica apenas se o serviço está ativo (liveness probe).
+Verifica apenas se o serviÃƒÂ§o estÃƒÂ¡ ativo (liveness probe).
 
 Retorna:
 ```json
@@ -95,7 +95,7 @@ Retorna:
 ```
 
 ### `/ready`
-Executa validações de dependências críticas:
+Executa validaÃƒÂ§ÃƒÂµes de dependÃƒÂªncias crÃƒÂ­ticas:
 
 - Conectividade com o banco de dados (SQLAlchemy `SELECT 1`)
 - Conectividade com o Redis (`PING`)
@@ -110,36 +110,36 @@ Exemplo de resposta:
 }
 ```
 
-## 🚦 Rate Limiting
+## Ã°Å¸Å¡Â¦ Rate Limiting
 
-A API utiliza **Flask-Limiter** com armazenamento em Redis para controle de taxa de requisições.
+A API utiliza **Flask-Limiter** com armazenamento em Redis para controle de taxa de requisiÃƒÂ§ÃƒÂµes.
 
-Características:
+CaracterÃƒÂ­sticas:
 
-- Armazenamento distribuído via Redis (não em memória)
-- Proteção contra abuso em endpoints sensíveis
-- Limite aplicado no endpoint de criação de cobranças (`POST /payment/charges`)
-- Resposta automática HTTP 429 quando o limite é excedido
+- Armazenamento distribuÃƒÂ­do via Redis (nÃƒÂ£o em memÃƒÂ³ria)
+- ProteÃƒÂ§ÃƒÂ£o contra abuso em endpoints sensÃƒÂ­veis
+- Limite aplicado no endpoint de criaÃƒÂ§ÃƒÂ£o de cobranÃƒÂ§as (`POST /payment/charges`)
+- Resposta automÃƒÂ¡tica HTTP 429 quando o limite ÃƒÂ© excedido
 
-Essa abordagem garante controle consistente mesmo com múltiplas instâncias da aplicação.
+Essa abordagem garante controle consistente mesmo com mÃƒÂºltiplas instÃƒÂ¢ncias da aplicaÃƒÂ§ÃƒÂ£o.
 
-## 🔄 Continuous Integration
+## Ã°Å¸â€â€ž Continuous Integration
 
-O projeto possui **pipeline de integração contínua (CI)** configurado com **GitHub Actions**.
+O projeto possui **pipeline de integraÃƒÂ§ÃƒÂ£o contÃƒÂ­nua (CI)** configurado com **GitHub Actions**.
 
 A cada push ou pull request:
 
-- As dependências dos dois serviços são instaladas
-- O ambiente de testes é preparado
-- A suíte de testes automatizados de `payment-charges-api/tests` é executada com **pytest**
+- As dependÃƒÂªncias dos dois serviÃƒÂ§os sÃƒÂ£o instaladas
+- O ambiente de testes ÃƒÂ© preparado
+- A suÃƒÂ­te de testes automatizados de `payment-charges-api/tests` ÃƒÂ© executada com **pytest**
 
-Isso garante que mudanças no código não quebrem comportamentos críticos do sistema.
+Isso garante que mudanÃƒÂ§as no cÃƒÂ³digo nÃƒÂ£o quebrem comportamentos crÃƒÂ­ticos do sistema.
 
 ---
 
-## 🛠️ Tecnologias
+## Ã°Å¸â€ºÂ Ã¯Â¸Â Tecnologias
 
-* **Python 3.11**
+* **Python 3.12**
 * **Flask**
 * **Flask SQLAlchemy**
 * **SQLite** (ambiente local)
@@ -150,40 +150,40 @@ Isso garante que mudanças no código não quebrem comportamentos críticos do s
 
 ---
 
-## 📂 Estrutura do Projeto
+## Ã°Å¸â€œâ€š Estrutura do Projeto
 
 ```text
 payment-platform/
-├── payment-charges-api/
-│   ├── app.py
-│   ├── routes/
-│   │   ├── charges.py
-│   │   └── webhooks.py
-│   ├── services/
-│   ├── repository/
-│   ├── security/
-│   ├── infrastructure/
-│   ├── audit/
-│   ├── instance/
-│   └── requirements.txt
-│
-├── fake-bank-service/
-│   ├── app.py
-│   ├── routes/
-│   ├── services/
-│   ├── clients/
-│   ├── security/
-│   └── requirements.txt
-│
-├── docker-compose.yml
-└── README.md
+Ã¢â€Å“Ã¢â€â‚¬Ã¢â€â‚¬ payment-charges-api/
+Ã¢â€â€š   Ã¢â€Å“Ã¢â€â‚¬Ã¢â€â‚¬ app.py
+Ã¢â€â€š   Ã¢â€Å“Ã¢â€â‚¬Ã¢â€â‚¬ routes/
+Ã¢â€â€š   Ã¢â€â€š   Ã¢â€Å“Ã¢â€â‚¬Ã¢â€â‚¬ charges.py
+Ã¢â€â€š   Ã¢â€â€š   Ã¢â€â€Ã¢â€â‚¬Ã¢â€â‚¬ webhooks.py
+Ã¢â€â€š   Ã¢â€Å“Ã¢â€â‚¬Ã¢â€â‚¬ services/
+Ã¢â€â€š   Ã¢â€Å“Ã¢â€â‚¬Ã¢â€â‚¬ repository/
+Ã¢â€â€š   Ã¢â€Å“Ã¢â€â‚¬Ã¢â€â‚¬ security/
+Ã¢â€â€š   Ã¢â€Å“Ã¢â€â‚¬Ã¢â€â‚¬ infrastructure/
+Ã¢â€â€š   Ã¢â€Å“Ã¢â€â‚¬Ã¢â€â‚¬ audit/
+Ã¢â€â€š   Ã¢â€Å“Ã¢â€â‚¬Ã¢â€â‚¬ instance/
+Ã¢â€â€š   Ã¢â€â€Ã¢â€â‚¬Ã¢â€â‚¬ requirements.txt
+Ã¢â€â€š
+Ã¢â€Å“Ã¢â€â‚¬Ã¢â€â‚¬ fake-bank-service/
+Ã¢â€â€š   Ã¢â€Å“Ã¢â€â‚¬Ã¢â€â‚¬ app.py
+Ã¢â€â€š   Ã¢â€Å“Ã¢â€â‚¬Ã¢â€â‚¬ routes/
+Ã¢â€â€š   Ã¢â€Å“Ã¢â€â‚¬Ã¢â€â‚¬ services/
+Ã¢â€â€š   Ã¢â€Å“Ã¢â€â‚¬Ã¢â€â‚¬ clients/
+Ã¢â€â€š   Ã¢â€Å“Ã¢â€â‚¬Ã¢â€â‚¬ security/
+Ã¢â€â€š   Ã¢â€â€Ã¢â€â‚¬Ã¢â€â‚¬ requirements.txt
+Ã¢â€â€š
+Ã¢â€Å“Ã¢â€â‚¬Ã¢â€â‚¬ docker-compose.yml
+Ã¢â€â€Ã¢â€â‚¬Ã¢â€â‚¬ README.md
 ```
 
 ---
 
-## ⚡ Quickstart (60 segundos)
+## Ã¢Å¡Â¡ Quickstart (60 segundos)
 
-### Pré-requisitos
+### PrÃƒÂ©-requisitos
 
 * Docker
 * Docker Compose
@@ -194,15 +194,15 @@ payment-platform/
 docker compose up --build
 ```
 
-Serviços disponíveis:
+ServiÃƒÂ§os disponÃƒÂ­veis:
 
-* Payment API → `http://localhost:5000`
+* Payment API Ã¢â€ â€™ `http://localhost:5000`
   * `GET /health`
   * `GET /ready`
   * `POST /payment/charges`
   * `GET /payment/charges/<charge_id>`
   * `POST /webhooks/pix`
-* Fake Bank → `http://localhost:6000`
+* Fake Bank Ã¢â€ â€™ `http://localhost:6000`
   * `POST /bank/pix/charges`
   * `POST /bank/pix/pay`
   * `GET /bank/dlq`
@@ -210,9 +210,9 @@ Serviços disponíveis:
 
 ---
 
-## 🔁 Fluxo Completo (Exemplo Real)
+## Ã°Å¸â€Â Fluxo Completo (Exemplo Real)
 
-### 1️⃣ Criar cobrança
+### 1Ã¯Â¸ÂÃ¢Æ’Â£ Criar cobranÃƒÂ§a
 
 ```bash
 curl -X POST http://localhost:5000/payment/charges \
@@ -233,7 +233,7 @@ Resposta:
 
 ---
 
-### 2️⃣ Registrar cobrança no Fake Bank
+### 2Ã¯Â¸ÂÃ¢Æ’Â£ Registrar cobranÃƒÂ§a no Fake Bank
 
 ```bash
 curl -X POST http://localhost:6000/bank/pix/charges \
@@ -248,7 +248,7 @@ curl -X POST http://localhost:6000/bank/pix/charges \
 
 ---
 
-### 3️⃣ Processar pagamento PIX
+### 3Ã¯Â¸ÂÃ¢Æ’Â£ Processar pagamento PIX
 
 ```bash
 curl -X POST http://localhost:6000/bank/pix/pay \
@@ -261,7 +261,7 @@ O Fake Bank dispara o webhook automaticamente.
 
 ---
 
-### 4️⃣ Consultar status final
+### 4Ã¯Â¸ÂÃ¢Æ’Â£ Consultar status final
 
 ```bash
 curl http://localhost:5000/payment/charges/1 \
@@ -278,7 +278,7 @@ curl http://localhost:5000/payment/charges/1 \
 
 ---
 
-## 🔐 Exemplo Real de Webhook (Fake Bank → API)
+## Ã°Å¸â€Â Exemplo Real de Webhook (Fake Bank Ã¢â€ â€™ API)
 
 ### Headers
 
@@ -297,7 +297,7 @@ digest = HMAC-SHA256(WEBHOOK_SECRET, signed_message)
 X-Signature = "sha256=" + lowercase_hex(digest)
 ```
 
-`X-Timestamp` usa Unix epoch em segundos, somente dígitos. Alterar o
+`X-Timestamp` usa Unix epoch em segundos, somente dÃƒÂ­gitos. Alterar o
 timestamp ou qualquer byte do body invalida a assinatura.
 
 ### Body
@@ -313,7 +313,7 @@ timestamp ou qualquer byte do body invalida a assinatura.
 
 ---
 
-## 📜 OpenAPI
+## Ã°Å¸â€œÅ“ OpenAPI
 
 * Payment Charges API: `payment-charges-api/openapi.yaml`
 * Fake Bank Service: `fake-bank-service/openapi.yaml`
@@ -321,20 +321,20 @@ timestamp ou qualquer byte do body invalida a assinatura.
 * Pode ser usado para:
 
   * Swagger UI
-  * Geração de clientes
-  * Integrações externas
+  * GeraÃƒÂ§ÃƒÂ£o de clientes
+  * IntegraÃƒÂ§ÃƒÂµes externas
 
 ---
 
-## 🧪 Testes
+## Ã°Å¸Â§Âª Testes
 
-Para executar as suites do monorepo com isolamento entre serviços:
+Para executar as suites do monorepo com isolamento entre serviÃƒÂ§os:
 
 ```powershell
 .\scripts\test_all.ps1
 ```
 
-O script roda cada suite em um processo Python separado porque os serviços
+O script roda cada suite em um processo Python separado porque os serviÃƒÂ§os
 possuem modulos internos com nomes top-level iguais, como `security`,
 `services` e `routes`.
 
@@ -344,35 +344,32 @@ pytest payment-charges-api/tests -q
 
 * Testes automatizados com pytest
 * Testes manuais via Postman
-* Cenários cobertos:
+* CenÃƒÂ¡rios cobertos:
 
-  * Webhook válido
-  * Webhook duplicado (idempotência)
+  * Webhook vÃƒÂ¡lido
+  * Webhook duplicado (idempotÃƒÂªncia)
   * Webhook expirado
-  * Assinatura inválida
+  * Assinatura invÃƒÂ¡lida
   * Rate limit excedido
 
 ---
 
-## 📌 Próximos Passos
+## Ã°Å¸â€œÅ’ PrÃƒÂ³ximos Passos
 
-* [ ] Métricas (Prometheus)
-* [ ] Migração para PostgreSQL
+* [ ] MÃƒÂ©tricas (Prometheus)
+* [ ] MigraÃƒÂ§ÃƒÂ£o para PostgreSQL
 * [ ] Deploy em ambiente cloud
 
 ---
 
-## 👨‍💻 Autor
+## Ã°Å¸â€˜Â¨Ã¢â‚¬ÂÃ°Å¸â€™Â» Autor
 
-**Yago Félix**  
+**Yago FÃƒÂ©lix**  
 
-💼 Desenvolvedor Python — Back-end | Full Stack  
-🔍 Focado em APIs, automação e sistemas distribuídos
+Ã°Å¸â€™Â¼ Desenvolvedor Python Ã¢â‚¬â€ Back-end | Full Stack  
+Ã°Å¸â€Â Focado em APIs, automaÃƒÂ§ÃƒÂ£o e sistemas distribuÃƒÂ­dos
 
 GitHub: https://github.com/yagofelix00  
 LinkedIn: https://www.linkedin.com/in/yago-felix-737011279/
 
 ---
-
-
-
