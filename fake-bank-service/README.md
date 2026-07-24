@@ -150,6 +150,16 @@ docker compose up fake-bank-service
 
 ## 🔗 Endpoints
 
+### Health check
+
+```http
+GET /health
+```
+
+Retorna `{"status": "ok"}` quando o serviço está ativo.
+
+---
+
 ### Registrar cobrança
 
 ```

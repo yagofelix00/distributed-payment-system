@@ -6,8 +6,29 @@ servers:
   - url: http://localhost:6000
 tags:
   - name: Bank
+  - name: Health
 
 paths:
+  /health:
+    get:
+      tags: [Health]
+      summary: Health check
+      responses:
+        "200":
+          description: Service is healthy
+          content:
+            application/json:
+              schema:
+                type: object
+                required:
+                  - status
+                properties:
+                  status:
+                    type: string
+                    example: ok
+              example:
+                status: ok
+
   /bank/pix/charges:
     post:
       tags: [Bank]
