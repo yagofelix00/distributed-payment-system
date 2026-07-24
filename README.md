@@ -366,7 +366,7 @@ pytest payment-charges-api/tests -q
 
 **Yago Félix**
 
-💼 Desenvolvedor Python — Back-end | Full Stack
+💼 Desenvolvedor Python — Back-end | Full Stack  
 🔍 Focado em APIs, automação e sistemas distribuídos
 
 GitHub: https://github.com/yagofelix00
